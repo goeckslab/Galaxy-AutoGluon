@@ -13,5 +13,3 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir autogluon==1.2.0
 
-# Set working directory
-WORKDIR /app
