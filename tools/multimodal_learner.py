@@ -1,122 +1,219 @@
-import pandas as pd
-from autogluon.multimodal import MultiModalPredictor
 import argparse
-from sklearn.metrics import (
-    accuracy_score, log_loss, precision_score, recall_score, f1_score, roc_auc_score,
-    mean_squared_error, mean_absolute_error, r2_score
-)
+import json
+import os
+import random
+import sys
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+from autogluon.multimodal import MultiModalPredictor
+from sklearn.model_selection import train_test_split
+
+# Suppress warnings
+warnings.filterwarnings("ignore")
+
+
+def path_expander(path, base_folder):
+    """Expand relative image paths into absolute paths."""
+    path = path.lstrip("/")
+    return os.path.abspath(os.path.join(base_folder, path))
 
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Train a MultiModalPredictor and evaluate metrics")
-    parser.add_argument('--input_csv_train', required=True, help="Path to the training CSV file")
-    parser.add_argument('--input_csv_test', required=True, help="Path to the test CSV file")
-    parser.add_argument('--target_column', required=True, help="Name of the target column")
-    parser.add_argument('--output_csv', required=True, help="Path to save the metrics CSV")
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate AutoGluon MultiModal \
+                     on an image dataset"
+    )
+    parser.add_argument(
+        "--train_csv",
+        required=True,
+        help="Path to training metadata CSV (must include an image-ID column \
+              and a label column).",
+    )
+    parser.add_argument(
+        "--test_csv",
+        required=True,
+        help="Path to test metadata CSV (must include the same \
+              image-ID column).",
+    )
+    parser.add_argument(
+        "--label_column",
+        default="dx",
+        help="Name of the target/label column in your CSVs (default: dx).",
+    )
+    parser.add_argument(
+        "--image_column",
+        default="image_id",
+        help="Name of the column that holds the image filename/ID \
+              (default: image_id).",
+    )
+    parser.add_argument(
+        "--time_limit",
+        type=int,
+        default=None,
+        help="Optional: wall-clock time (in seconds) to limit training. \
+              If omitted, no time limit is passed.",
+    )
+    parser.add_argument(
+        "--output_json",
+        default="results.json",
+        help="Output JSON file where metrics + config will be saved.",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42).",
+    )
     args = parser.parse_args()
 
-    # Load datasets
-    print("Loading datasets...")
-    train_df = pd.read_csv(args.input_csv_train)
-    test_df = pd.read_csv(args.input_csv_test)
+    # Set random seeds for reproducibility
+    random.seed(args.random_seed)
+    np.random.seed(args.random_seed)
+    torch.manual_seed(args.random_seed)
 
-    # Initialize and train the model
-    print("Initializing MultiModalPredictor...")
-    predictor = MultiModalPredictor(label=args.target_column)
-    print("Training the model...")
-    predictor.fit(train_data=train_df)
-    print("Training completed.")
+    # 1) Read CSVs (do NOT use index_col=0 so all columns remain)
+    try:
+        train_data = pd.read_csv(args.train_csv)
+    except Exception as e:
+        print(
+            f"ERROR reading train CSV at {args.train_csv}: {e}",
+            file=sys.stderr
+        )
+        sys.exit(1)
 
-    # Get the problem type
-    problem_type = predictor.problem_type
-    print(f"Detected problem type: {problem_type}")
+    try:
+        test_data = pd.read_csv(args.test_csv)
+    except Exception as e:
+        print(
+            f"ERROR reading test CSV at {args.test_csv}: {e}",
+            file=sys.stderr
+        )
+        sys.exit(1)
 
-    # Extract true labels
-    train_true = train_df[args.target_column]
-    test_true = test_df[args.target_column]
+    # 2) Verify that image_column actually exists
+    if args.image_column not in train_data.columns:
+        print(
+            f"ERROR: The specified image_column '{args.image_column}' \
+            does not exist in train CSV.",
+            file=sys.stderr,
+        )
+        print(
+            f"Available columns in {args.train_csv}:\n  "
+            + ", ".join(train_data.columns),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Handle classification tasks
-    if problem_type in ['binary', 'multiclass']:
-        # Predict labels
-        train_pred_labels = predictor.predict(train_df)
-        test_pred_labels = predictor.predict(test_df)
+    if args.image_column not in test_data.columns:
+        print(
+            f"ERROR: The specified image_column '{args.image_column}' \
+            does not exist in test CSV.",
+            file=sys.stderr,
+        )
+        print(
+            f"Available columns in {args.test_csv}:\n  " +
+            ", ".join(test_data.columns),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-        # Predict probabilities
-        if problem_type == 'binary':
-            train_pred_probs = predictor.predict_proba(train_df)[:, 1]  # Probability of positive class
-            test_pred_probs = predictor.predict_proba(test_df)[:, 1]
-        else:  # multiclass
-            train_pred_probs = predictor.predict_proba(train_df)  # Full probability array
-            test_pred_probs = predictor.predict_proba(test_df)
+    # 3) Split train_data into train and validation sets
+    train, val = train_test_split(
+        train_data,
+        test_size=0.2,
+        random_state=args.random_seed,
+        stratify=train_data[args.label_column],
+    )
 
-        # Common classification metrics
-        train_accuracy = accuracy_score(train_true, train_pred_labels)
-        test_accuracy = accuracy_score(test_true, test_pred_labels)
-        train_log_loss = log_loss(train_true, train_pred_probs)
-        test_log_loss = log_loss(test_true, test_pred_probs)
+    # 4) Expand relative image paths into absolute paths
+    base_folder = os.path.dirname(os.path.abspath(args.train_csv))
+    train[args.image_column] = train[args.image_column].apply(
+        lambda x: path_expander(str(x), base_folder)
+    )
+    val[args.image_column] = val[args.image_column].apply(
+        lambda x: path_expander(str(x), base_folder)
+    )
+    test_data[args.image_column] = test_data[args.image_column].apply(
+        lambda x: path_expander(str(x), base_folder)
+    )
 
-        if problem_type == 'binary':
-            # Binary-specific metrics
-            train_precision = precision_score(train_true, train_pred_labels)
-            test_precision = precision_score(test_true, test_pred_labels)
-            train_recall = recall_score(train_true, train_pred_labels)
-            test_recall = recall_score(test_true, test_pred_labels)
-            train_f1 = f1_score(train_true, train_pred_labels)
-            test_f1 = f1_score(test_true, test_pred_labels)
-            train_roc_auc = roc_auc_score(train_true, train_pred_probs)
-            test_roc_auc = roc_auc_score(test_true, test_pred_probs)
-            train_specificity = recall_score(train_true, train_pred_labels, pos_label=0)
-            test_specificity = recall_score(test_true, test_pred_labels, pos_label=0)
-        else:  # multiclass
-            # Multi-class metrics with macro averaging
-            train_precision = precision_score(train_true, train_pred_labels, average='macro')
-            test_precision = precision_score(test_true, test_pred_labels, average='macro')
-            train_recall = recall_score(train_true, train_pred_labels, average='macro')
-            test_recall = recall_score(test_true, test_pred_labels, average='macro')
-            train_f1 = f1_score(train_true, train_pred_labels, average='macro')
-            test_f1 = f1_score(test_true, test_pred_labels, average='macro')
-            # Skip ROC-AUC and specificity for simplicity
-            train_roc_auc = None
-            test_roc_auc = None
-            train_specificity = None
-            test_specificity = None
+    # 5) Create the predictor
+    predictor = MultiModalPredictor(label=args.label_column)
 
-        # Compile classification metrics
-        metrics_df = pd.DataFrame({
-            'metrics': ['accuracy', 'loss', 'precision', 'recall', 'f1', 'roc_auc', 'specificity'],
-            'train': [train_accuracy, train_log_loss, train_precision, train_recall, train_f1, train_roc_auc, train_specificity],
-            'test': [test_accuracy, test_log_loss, test_precision, test_recall, test_f1, test_roc_auc, test_specificity]
-        })
-
-    # Handle regression tasks
-    elif problem_type == 'regression':
-        # Predict continuous values
-        train_pred = predictor.predict(train_df)
-        test_pred = predictor.predict(test_df)
-
-        # Regression metrics
-        train_mse = mean_squared_error(train_true, train_pred)
-        test_mse = mean_squared_error(test_true, test_pred)
-        train_mae = mean_absolute_error(train_true, train_pred)
-        test_mae = mean_absolute_error(test_true, test_pred)
-        train_r2 = r2_score(train_true, train_pred)
-        test_r2 = r2_score(test_true, test_pred)
-
-        # Compile regression metrics
-        metrics_df = pd.DataFrame({
-            'metrics': ['mse', 'mae', 'r2'],
-            'train': [train_mse, train_mae, train_r2],
-            'test': [test_mse, test_mae, test_r2]
-        })
-
+    # 6) Fit with or without time_limit
+    if args.time_limit is not None:
+        predictor.fit(train, time_limit=args.time_limit)
     else:
-        raise ValueError(f"Unsupported problem type: {problem_type}")
+        predictor.fit(train)
 
-    # Save metrics to CSV
-    metrics_df.to_csv(args.output_csv, index=False)
-    print(f"Metrics saved to {args.output_csv}")
+    # 7) Define comprehensive metrics based on problem type
+    problem_type = predictor.problem_type.lower()
+    if problem_type == "binary":
+        base_metrics = [
+            "accuracy",
+            "balanced_accuracy",
+            "f1",
+            "f1_macro",
+            "f1_micro",
+            "f1_weighted",
+            "precision",
+            "precision_macro",
+            "precision_micro",
+            "precision_weighted",
+            "recall",
+            "recall_macro",
+            "recall_micro",
+            "recall_weighted",
+            "log_loss",
+            "roc_auc",
+            "average_precision",
+            "mcc",
+            "quadratic_kappa",
+        ]
+    elif problem_type == "multiclass":
+        base_metrics = [
+            "accuracy",
+            "balanced_accuracy",
+            "f1_macro",
+            "f1_micro",
+            "f1_weighted",
+            "precision_macro",
+            "precision_micro",
+            "precision_weighted",
+            "recall_macro",
+            "recall_micro",
+            "recall_weighted",
+            "log_loss",
+            "roc_auc_ovr",
+            "roc_auc_ovo",
+            "mcc",
+            "quadratic_kappa",
+        ]
+    else:  # For regression or other types
+        base_metrics = ["root_mean_squared_error", "mean_absolute_error", "r2"]
+
+    # 8) Evaluate on training, validation, and test sets
+    train_scores = predictor.evaluate(train, metrics=base_metrics)
+    val_scores = predictor.evaluate(val, metrics=base_metrics)
+    test_scores = predictor.evaluate(test_data, metrics=base_metrics)
+
+    # 9) Extract the learner’s internal config (all hyperparameters)
+    config = predictor._learner._config
+
+    # 10) Write everything out as JSON
+    output = {
+        "train_metrics": train_scores,
+        "validation_metrics": val_scores,
+        "test_metrics": test_scores,
+        "config": config,
+    }
+    with open(args.output_json, "w") as f:
+        json.dump(output, f, indent=2, default=lambda o: str(o))
+    print(f"Saved results + config to '{args.output_json}'")
 
 
-if __name__ == "__MAIN__":
+if __name__ == "__main__":
     main()
