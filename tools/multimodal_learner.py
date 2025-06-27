@@ -1,10 +1,10 @@
 import argparse
+import base64
 import json
 import os
 import random
 import sys
 import warnings
-
 import numpy as np
 import pandas as pd
 import torch
@@ -12,217 +12,358 @@ from autogluon.multimodal import MultiModalPredictor
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc
+from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
+from utils import get_metrics_help_modal
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
-
 
 def path_expander(path, base_folder):
     """Expand relative image paths into absolute paths."""
     path = str(path).lstrip("/")
     return os.path.abspath(os.path.join(base_folder, path))
 
+def encode_image_to_base64(img_path):
+    """Encode an image file to base64 string for HTML embedding."""
+    with open(img_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
 
-def generate_config_table_html(config):
+def format_config_table_html(config):
+    """Format configuration table with selected parameters."""
+    display_keys = [
+        "model_name",
+        "time_limit",
+        "random_seed",
+        "batch_size",
+        "learning_rate",
+        "num_epochs",
+    ]
     rows = []
-    for key, val in config.items():
-        if isinstance(val, (int, float, str, bool)):
+    for key in display_keys:
+        val = config.get(key, "N/A")
+        if val == "N/A" and key in ["batch_size", "learning_rate", "num_epochs"]:
+            val = "Auto-selected by AutoGluon"
+        elif key == "learning_rate" and isinstance(val, float):
+            val = f"{val:.6f}"
+        if val is not None:
             rows.append(
-                f"<tr><td style='padding: 6px 12px; border: 1px solid #ccc; text-align: left;'>{key}</td>"
-                f"<td style='padding: 6px 12px; border: 1px solid #ccc; text-align: center;'>{val}</td></tr>"
+                f"<tr>"
+                f"<td style='padding: 6px 12px; border: 1px solid #ccc; text-align: left;'>"
+                f"{key.replace('_', ' ').title()}</td>"
+                f"<td style='padding: 6px 12px; border: 1px solid #ccc; text-align: center;'>"
+                f"{val}</td>"
+                f"</tr>"
             )
-    return f"""
-    <h2 style='text-align: center;'>Training Configuration</h2>
-    <div style='display: flex; justify-content: center;'>
-    <table style='border-collapse: collapse; width: 60%; table-layout: auto;'>
-        <thead><tr><th style='padding: 10px; border: 1px solid #ccc; text-align: left;'>Parameter</th>
-        <th style='padding: 10px; border: 1px solid #ccc; text-align: center;'>Value</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-    </table></div><br>
-    <p style='text-align: center; font-size: 0.9em;'>Model trained using AutoGluon. 
-    For more details, see the <a href='https://auto.gluon.ai/stable/api/autogluon.multimodal.MultiModalPredictor.html'>official documentation</a>.</p><hr>
-    """
+    split_info = "Train/Validation split: 80/20 (stratified); Test set provided separately."
+    rows.append(
+        f"<tr>"
+        f"<td style='padding: 6px 12px; border: 1px solid #ccc; text-align: left;'>"
+        f"Data Split</td>"
+        f"<td style='padding: 6px 12px; border: 1px solid #ccc; text-align: center;'>"
+        f"{split_info}</td>"
+        f"</tr>"
+    )
+    return (
+        "<h2 style='text-align: center;'>Training Setup</h2>"
+        "<div style='display: flex; justify-content: center;'>"
+        "<table style='border-collapse: collapse; width: 60%; table-layout: auto;'>"
+        "<thead><tr>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: left;'>"
+        "Parameter</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center;'>"
+        "Value</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div><br>"
+        "<p style='text-align: center; font-size: 0.9em;'>"
+        "Model trained using AutoGluon. "
+        "For more details, see the <a href='https://auto.gluon.ai/stable/api/autogluon.multimodal.MultiModalPredictor.html' target='_blank'>"
+        "official documentation</a>.</p><hr>"
+    )
 
+def generate_table_row(cells, styles):
+    """Helper function to generate an HTML table row."""
+    return (
+        "<tr>"
+        + "".join(f"<td style='{styles}'>{cell}</td>" for cell in cells)
+        + "</tr>"
+    )
 
-def generate_metrics_table_html(train_scores, val_scores, test_scores):
-    # Use only metrics present in all three sets and are numeric
+def format_stats_table_html(train_scores, val_scores, test_scores):
+    """Format a combined HTML table for training, validation, and test metrics."""
     metrics = set(train_scores.keys()) & set(val_scores.keys()) & set(test_scores.keys())
     rows = []
     for metric in sorted(metrics):
-        train_val = train_scores.get(metric, "N/A")
-        val_val = val_scores.get(metric, "N/A")
-        test_val = test_scores.get(metric, "N/A")
-        if all(isinstance(v, (int, float, np.integer, np.floating)) for v in [train_val, val_val, test_val]):
-            rows.append(
-                f"<tr><td style='padding: 10px; border: 1px solid #ccc; text-align: left; white-space: nowrap;'>{metric.replace('_', ' ').title()}</td>"
-                f"<td style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>{train_val:.4f}</td>"
-                f"<td style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>{val_val:.4f}</td>"
-                f"<td style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>{test_val:.4f}</td></tr>"
-            )
+        t = train_scores.get(metric)
+        v = val_scores.get(metric)
+        te = test_scores.get(metric)
+        if all(isinstance(x, (int, float, np.integer, np.floating)) for x in [t, v, te]):
+            display_name = metric.replace('_', ' ').title()
+            rows.append([display_name, f"{t:.4f}", f"{v:.4f}", f"{te:.4f}"])
+    if not rows:
+        return "<table><tr><td>No metric values found.</td></tr></table>"
+    html = (
+        "<h2 style='text-align: center;'>Model Performance Summary</h2>"
+        "<div style='display: flex; justify-content: center;'>"
+        "<table style='border-collapse: collapse; table-layout: auto;'>"
+        "<thead><tr>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: left; white-space: nowrap;'>Metric</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Train</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Validation</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Test</th>"
+        "</tr></thead><tbody>"
+    )
+    for row in rows:
+        html += generate_table_row(
+            row,
+            "padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;"
+        )
+    html += "</tbody></table></div><br>"
+    return html
+
+def format_train_val_stats_table_html(train_scores, val_scores):
+    """Format HTML table for training and validation metrics."""
+    metrics = set(train_scores.keys()) & set(val_scores.keys())
+    rows = []
+    for metric in sorted(metrics):
+        t = train_scores.get(metric)
+        v = val_scores.get(metric)
+        if all(isinstance(x, (int, float, np.integer, np.floating)) for x in [t, v]):
+            display_name = metric.replace('_', ' ').title()
+            rows.append([display_name, f"{t:.4f}", f"{v:.4f}"])
+    if not rows:
+        return "<table><tr><td>No metric values found for Train/Validation.</td></tr></table>"
+    html = (
+        "<h2 style='text-align: center;'>Train/Validation Performance Summary</h2>"
+        "<div style='display: flex; justify-content: center;'>"
+        "<table style='border-collapse: collapse; table-layout: auto;'>"
+        "<thead><tr>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: left; white-space: nowrap;'>Metric</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Train</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Validation</th>"
+        "</tr></thead><tbody>"
+    )
+    for row in rows:
+        html += generate_table_row(
+            row,
+            "padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;"
+        )
+    html += "</tbody></table></div><br>"
+    return html
+
+def format_test_stats_table_html(test_scores):
+    """Format HTML table for test metrics."""
+    rows = []
+    for key in sorted(test_scores.keys()):
+        value = test_scores[key]
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            display_name = key.replace('_', ' ').title()
+            rows.append([display_name, f"{value:.4f}"])
+    if not rows:
+        return "<table><tr><td>No test metric values found.</td></tr></table>"
+    html = (
+        "<h2 style='text-align: center;'>Test Performance Summary</h2>"
+        "<div style='display: flex; justify-content: center;'>"
+        "<table style='border-collapse: collapse; table-layout: auto;'>"
+        "<thead><tr>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: left; white-space: nowrap;'>Metric</th>"
+        "<th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Test</th>"
+        "</tr></thead><tbody>"
+    )
+    for row in rows:
+        html += generate_table_row(
+            row,
+            "padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;"
+        )
+    html += "</tbody></table></div><br>"
+    return html
+
+def build_tabbed_html(metrics_html, train_val_html, test_html):
+    """Build tabbed HTML structure for the report."""
     return f"""
-    <h2 style='text-align: center;'>Model Performance Summary</h2>
-    <div style='display: flex; justify-content: center;'>
-    <table style='border-collapse: collapse; table-layout: auto;'>
-        <thead><tr><th style='padding: 10px; border: 1px solid #ccc; text-align: left; white-space: nowrap;'>Metric</th>
-        <th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Train</th>
-        <th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Validation</th>
-        <th style='padding: 10px; border: 1px solid #ccc; text-align: center; white-space: nowrap;'>Test</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-    </table></div><br>
-    """
-
-
-def get_metrics_help_modal():
-    modal_html = """
-<div id="metricsHelpModal" class="modal">
-  <div class="modal-content">
-    <span class="close">×</span>
-    <h2>Model Evaluation Metrics — Help Guide</h2>
-    <div class="metrics-guide">
-      <h3>1) General Metrics</h3>
-      <p><strong>Loss:</strong> Measures the difference between predicted and actual values. Lower is better. Often used for optimization during training.</p>
-      <p><strong>Accuracy:</strong> Proportion of correct predictions among all predictions. Simple but can be misleading for imbalanced datasets.</p>
-      <p><strong>Micro Accuracy:</strong> Calculates accuracy by summing up all individual true positives and true negatives across all classes, making it suitable for multiclass or multilabel problems.</p>
-      <p><strong>Token Accuracy:</strong> Measures how often the predicted tokens (e.g., in sequences) match the true tokens. Useful in sequence prediction tasks like NLP.</p>
-      <h3>2) Precision, Recall & Specificity</h3>
-      <p><strong>Precision:</strong> Out of all positive predictions, how many were correct. Precision = TP / (TP + FP). Helps when false positives are costly.</p>
-      <p><strong>Recall (Sensitivity):</strong> Out of all actual positives, how many were predicted correctly. Recall = TP / (TP + FN). Important when missing positives is risky.</p>
-      <p><strong>Specificity:</strong> True negative rate. Measures how well the model identifies negatives. Specificity = TN / (TN + FP). Useful in medical testing to avoid false alarms.</p>
-      <h3>3) Macro, Micro, and Weighted Averages</h3>
-      <p><strong>Macro Precision / Recall / F1:</strong> Averages the metric across all classes, treating each class equally, regardless of class frequency. Best when class sizes are balanced.</p>
-      <p><strong>Micro Precision / Recall / F1:</strong> Aggregates TP, FP, FN across all classes before computing the metric. Gives a global view and is ideal for class-imbalanced problems.</p>
-      <p><strong>Weighted Precision / Recall / F1:</strong> Averages each metric across classes, weighted by the number of true instances per class. Balances importance of classes based on frequency.</p>
-      <h3>4) Average Precision (PR-AUC Variants)</h3>
-      <p><strong>Average Precision Macro:</strong> Precision-Recall AUC averaged across all classes equally. Useful for balanced multi-class problems.</p>
-      <p><strong>Average Precision Micro:</strong> Global Precision-Recall AUC using all instances. Best for imbalanced data or multi-label classification.</p>
-      <p><strong>Average Precision Samples:</strong> Precision-Recall AUC averaged across individual samples (not classes). Ideal for multi-label problems where each sample can belong to multiple classes.</p>
-      <h3>5) ROC-AUC Variants</h3>
-      <p><strong>ROC-AUC:</strong> Measures model's ability to distinguish between classes. AUC = 1 is perfect; 0.5 is random guessing. Use for binary classification.</p>
-      <p><strong>Macro ROC-AUC:</strong> Averages the AUC across all classes equally. Suitable when classes are balanced and of equal importance.</p>
-      <p><strong>Micro ROC-AUC:</strong> Computes AUC from aggregated predictions across all classes. Useful in multiclass or multilabel settings with imbalance.</p>
-      <h3>6) Ranking Metrics</h3>
-      <p><strong>Hits at K:</strong> Measures whether the true label is among the top-K predictions. Common in recommendation systems and retrieval tasks.</p>
-      <h3>7) Confusion Matrix Stats (Per Class)</h3>
-      <p><strong>True Positives / Negatives (TP / TN):</strong> Correct predictions for positives and negatives respectively.</p>
-      <p><strong>False Positives / Negatives (FP / FN):</strong> Incorrect predictions — false alarms and missed detections.</p>
-      <h3>8) Other Useful Metrics</h3>
-      <p><strong>Cohen's Kappa:</strong> Measures agreement between predicted and actual values adjusted for chance. Useful for multiclass classification with imbalanced labels.</p>
-      <p><strong>Matthews Correlation Coefficient (MCC):</strong> Balanced measure of prediction quality that takes into account TP, TN, FP, and FN. Particularly effective for imbalanced datasets.</p>
-      <h3>9) Metric Recommendations</h3>
-      <ul>
-        <li>Use <strong>Accuracy + F1</strong> for balanced data.</li>
-        <li>Use <strong>Precision, Recall, ROC-AUC</strong> for imbalanced datasets.</li>
-        <li>Use <strong>Average Precision Micro</strong> for multilabel or class-imbalanced problems.</li>
-        <li>Use <strong>Macro scores</strong> when all classes should be treated equally.</li>
-        <li>Use <strong>Weighted scores</strong> when class imbalance should be accounted for without ignoring small classes.</li>
-        <li>Use <strong>Confusion Matrix stats</strong> to analyze class-wise performance.</li>
-        <li>Use <strong>Hits at K</strong> for recommendation or ranking-based tasks.</li>
-      </ul>
-    </div>
-  </div>
-</div>
-"""
-    modal_css = """
 <style>
-.modal {
-  display: none;
-  position: fixed;
-  z-index: 1;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  overflow: auto;
-  background-color: rgba(0,0,0,0.4);
-}
-.modal-content {
-  background-color: #fefefe;
-  margin: 15% auto;
-  padding: 20px;
-  border: 1px solid #888;
-  width: 80%;
-  max-width: 800px;
-}
-.close {
-  color: #aaa;
-  float: right;
-  font-size: 28px;
-  font-weight: bold;
-}
-.close:hover,
-.close:focus {
-  color: black;
-  text-decoration: none;
+.tabs {{
+  display: flex;
+  border-bottom: 2px solid #ccc;
+  margin-bottom: 1rem;
+}}
+.tab {{
+  padding: 10px 20px;
   cursor: pointer;
-}
-.metrics-guide h3 {
-  margin-top: 20px;
-}
-.metrics-guide p {
-  margin: 5px 0;
-}
-.metrics-guide ul {
-  margin: 10px 0;
-  padding-left: 20px;
-}
+  border: 1px solid #ccc;
+  border-bottom: none;
+  background: #f9f9f9;
+  margin-right: 5px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}}
+.tab.active {{
+  background: white;
+  font-weight: bold;
+}}
+.tab-content {{
+  display: none;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-top: none;
+}}
+.tab-content.active {{
+  display: block;
+}}
 </style>
-"""
-    modal_js = """
+<div class="tabs">
+  <div class="tab active" onclick="showTab('metrics')">Config & Results Summary</div>
+  <div class="tab" onclick="showTab('trainval')">Train/Validation Results</div>
+  <div class="tab" onclick="showTab('test')">Test Results</div>
+</div>
+<div id="metrics" class="tab-content active">
+  {metrics_html}
+</div>
+<div id="trainval" class="tab-content">
+  {train_val_html}
+</div>
+<div id="test" class="tab-content">
+  {test_html}
+</div>
 <script>
-document.addEventListener("DOMContentLoaded", function() {
-  var modal = document.getElementById("metricsHelpModal");
-  var openBtn = document.getElementById("openMetricsHelp");
-  var span = document.getElementsByClassName("close")[0];
-  if (openBtn && modal) {
-    openBtn.onclick = function() {
-      modal.style.display = "block";
-    };
-  }
-  if (span && modal) {
-    span.onclick = function() {
-      modal.style.display = "none";
-    };
-  }
-  window.onclick = function(event) {
-    if (event.target == modal) {
-      modal.style.display = "none";
-    }
-  }
-});
+function showTab(id) {{
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelector(`.tab[onclick*="${{id}}"]`).classList.add('active');
+}}
 </script>
 """
-    return modal_css + modal_html + modal_js
 
+def generate_plots(y_true, y_pred, y_prob, problem_type, html_dir, classes):
+    """Generate confusion matrix, ROC-AUC, and PR-AUC plots."""
+    os.makedirs(html_dir, exist_ok=True)
+    plot_files = []
 
-def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir):
-    config_html = generate_config_table_html(config)
-    metrics_html = generate_metrics_table_html(train_scores, val_scores, test_scores)
-    plots_html = ""
-    if problem_type in ["binary", "multiclass"]:
-        plots_html += (
-            '<h2 style="text-align: center;">Visualizations</h2>'
-            '<div style="text-align: center;">'
-            '<img src="confusion_matrix.png" alt="Confusion Matrix" '
-            'style="max-width:90%; max-height:600px; border:1px solid #ddd; margin-bottom:20px;">'
-            '</div>'
-        )
-        if problem_type == "binary":
-            plots_html += (
-                '<div style="text-align: center;">'
-                '<img src="roc_curve.png" alt="ROC Curve" '
-                'style="max-width:90%; max-height:600px; border:1px solid #ddd; margin-bottom:20px;">'
-                '</div>'
-            )
+    # Confusion Matrix
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix')
+    cm_path = os.path.join(html_dir, 'confusion_matrix.png')
+    plt.savefig(cm_path)
+    plt.close()
+    plot_files.append(('Confusion Matrix', cm_path))
+
+    if problem_type == "binary":
+        # Convert y_true to binary if needed
+        if not np.issubdtype(y_true.dtype, np.number):
+            y_true_bin = pd.factorize(y_true)[0]
+        else:
+            y_true_bin = y_true
+        y_score = y_prob.iloc[:, 1] if hasattr(y_prob, "columns") else y_prob[:, 1]
+
+        # ROC Curve
+        fpr, tpr, _ = roc_curve(y_true_bin, y_score)
+        roc_auc = auc(fpr, tpr)
+        plt.figure()
+        plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic')
+        plt.legend(loc="lower right")
+        roc_path = os.path.join(html_dir, 'roc_curves.png')
+        plt.savefig(roc_path)
+        plt.close()
+        plot_files.append(('ROC Curve', roc_path))
+
+        # PR-AUC Curve
+        precision, recall, _ = precision_recall_curve(y_true_bin, y_score)
+        pr_auc = auc(recall, precision)
+        plt.figure()
+        plt.plot(recall, precision, label=f'PR curve (area = {pr_auc:.2f})')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curve')
+        plt.legend(loc="lower left")
+        pr_path = os.path.join(html_dir, 'precision_recall_curve.png')
+        plt.savefig(pr_path)
+        plt.close()
+        plot_files.append(('Precision-Recall Curve', pr_path))
+
+    elif problem_type == "multiclass":
+        # ROC-AUC (One-vs-Rest)
+        y_true_bin = pd.get_dummies(y_true).values
+        plt.figure()
+        for i, class_name in enumerate(classes):
+            fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, label=f'{class_name} (area = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('ROC Curves (One-vs-Rest)')
+        plt.legend(loc="lower right")
+        roc_path = os.path.join(html_dir, 'roc_curves.png')
+        plt.savefig(roc_path)
+        plt.close()
+        plot_files.append(('ROC Curves (One-vs-Rest)', roc_path))
+
+        # PR-AUC (One-vs-Rest)
+        plt.figure()
+        for i, class_name in enumerate(classes):
+            precision, recall, _ = precision_recall_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
+            pr_auc = auc(recall, precision)
+            plt.plot(recall, precision, label=f'{class_name} (area = {pr_auc:.2f})')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curves (One-vs-Rest)')
+        plt.legend(loc="lower left")
+        pr_path = os.path.join(html_dir, 'precision_recall_curve.png')
+        plt.savefig(pr_path)
+        plt.close()
+        plot_files.append(('Precision-Recall Curves (One-vs-Rest)', pr_path))
+
     elif problem_type == "regression":
-        plots_html += (
-            '<h2 style="text-align: center;">Visualizations</h2>'
-            '<div style="text-align: center;">'
-            '<img src="true_vs_pred.png" alt="True vs Predicted" '
-            'style="max-width:90%; max-height:600px; border:1px solid #ddd; margin-bottom:20px;">'
-            '</div>'
+        # True vs Predicted Scatter
+        plt.figure()
+        plt.scatter(y_true, y_pred, alpha=0.5)
+        plt.xlabel('True Values')
+        plt.ylabel('Predictions')
+        plt.title('True vs Predicted')
+        scatter_path = os.path.join(html_dir, 'true_vs_pred.png')
+        plt.savefig(scatter_path)
+        plt.close()
+        plot_files.append(('True vs Predicted', scatter_path))
+
+    return plot_files
+
+def render_img_section(title, plot_files):
+    """Render HTML section for plots."""
+    if not plot_files:
+        return f"<h2 style='text-align: center;'>{title}</h2><p><em>No plots found.</em></p>"
+    section_html = f"<h2 style='text-align: center;'>{title}</h2><div>"
+    for plot_title, img_path in plot_files:
+        b64 = encode_image_to_base64(img_path)
+        section_html += (
+            f'<div class="plot" style="margin-bottom:20px;text-align:center;">'
+            f"<h3>{plot_title}</h3>"
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="max-width:90%;max-height:600px;border:1px solid #ddd;" />'
+            f"</div>"
         )
-    modal_html = get_metrics_help_modal()
+    section_html += "</div>"
+    return section_html
+
+def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes):
+    """Generate tabbed HTML report with config, metrics, and plots."""
+    config_html = format_config_table_html(config)
+    metrics_html = format_stats_table_html(train_scores, val_scores, test_scores)
+    train_val_html = format_train_val_stats_table_html(train_scores, val_scores)
+    test_html = format_test_stats_table_html(test_scores)
+    
+    plot_files = generate_plots(test_scores.get('y_true'), test_scores.get('y_pred'), test_scores.get('y_prob'), problem_type, html_dir, classes)
+    
     button_html = """
     <button class="help-modal-btn" id="openMetricsHelp">Model Evaluation Metrics — Help Guide</button>
     <br><br>
@@ -247,23 +388,26 @@ def generate_html_report(config, train_scores, val_scores, test_scores, problem_
     }
     </style>
     """
+    tab1_content = button_html + config_html + metrics_html
+    tab2_content = button_html + train_val_html + render_img_section("Training & Validation Visualizations", [])  # No train/val plots yet
+    tab3_content = button_html + test_html + render_img_section("Test Visualizations", plot_files)
+    
+    tabbed_html = build_tabbed_html(tab1_content, tab2_content, tab3_content)
+    modal_html = get_metrics_help_modal()
+    
     html = f"""
     <html>
     <head>
-    <title>Model Report</title>
+    <title>Image Classification Results</title>
     </head>
     <body>
-    <h1 style='text-align: center;'>Model Report</h1>
-    {button_html}
-    {config_html}
-    {metrics_html}
-    {plots_html}
+    <h1 style='text-align: center;'>Image Classification Results</h1>
+    {tabbed_html}
     {modal_html}
     </body>
     </html>
     """
     return html
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -407,73 +551,21 @@ def main():
     val_scores = predictor.evaluate(val, metrics=base_metrics)
     test_scores = predictor.evaluate(test_data, metrics=base_metrics)
 
-    # Get predictions and generate plots
+    # Get predictions and probabilities
     y_true = test_data[args.label_column]
     y_pred = predictor.predict(test_data)
-    html_dir = os.path.dirname(args.output_html) or "."
-    os.makedirs(html_dir, exist_ok=True)
-
-    if problem_type in ["binary", "multiclass"]:
-        y_prob = predictor.predict_proba(test_data)
-        # Confusion Matrix
-        cm = confusion_matrix(y_true, y_pred)
-        plt.figure(figsize=(10, 7))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        plt.title('Confusion Matrix')
-        plt.savefig(os.path.join(html_dir, 'confusion_matrix.png'))
-        plt.close()
-        if problem_type == "binary":
-            # ROC Curve
-            # y_prob is a DataFrame for autogluon, get positive class prob
-            if hasattr(y_prob, "values"):
-                y_prob_np = y_prob.values
-            else:
-                y_prob_np = np.array(y_prob)
-            # Try to get positive class for binary
-            try:
-                if hasattr(y_prob, "columns"):
-                    # Try to get the column representing positive class
-                    if len(y_prob.columns) == 2:
-                        pos_class = y_prob.columns[1]
-                        y_score = y_prob[pos_class]
-                    else:
-                        y_score = y_prob.iloc[:, 1]
-                else:
-                    y_score = y_prob_np[:, 1]
-            except Exception:
-                y_score = y_prob_np[:, 1] if y_prob_np.shape[1] > 1 else y_prob_np[:, 0]
-            # Ensure y_true is binary (0/1 or class labels), convert if needed
-            if not np.issubdtype(y_true.dtype, np.number):
-                y_true_bin = pd.factorize(y_true)[0]
-            else:
-                y_true_bin = y_true
-            fpr, tpr, _ = roc_curve(y_true_bin, y_score)
-            roc_auc = auc(fpr, tpr)
-            plt.figure()
-            plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
-            plt.plot([0, 1], [0, 1], 'k--')
-            plt.xlim([0.0, 1.0])
-            plt.ylim([0.0, 1.05])
-            plt.xlabel('False Positive Rate')
-            plt.ylabel('True Positive Rate')
-            plt.title('Receiver Operating Characteristic')
-            plt.legend(loc="lower right")
-            plt.savefig(os.path.join(html_dir, 'roc_curve.png'))
-            plt.close()
-    elif problem_type == "regression":
-        # Scatter Plot
-        plt.figure()
-        plt.scatter(y_true, y_pred, alpha=0.5)
-        plt.xlabel('True Values')
-        plt.ylabel('Predictions')
-        plt.title('True vs Predicted')
-        plt.savefig(os.path.join(html_dir, 'true_vs_pred.png'))
-        plt.close()
+    y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
+    classes = sorted(np.unique(y_true)) if problem_type in ["binary", "multiclass"] else []
+    
+    # Store predictions in test_scores for plot generation
+    test_scores['y_true'] = y_true
+    test_scores['y_pred'] = y_pred
+    test_scores['y_prob'] = y_prob
 
     # Extract config
     config = predictor._learner._config
+    config['random_seed'] = args.random_seed
+    config['time_limit'] = args.time_limit
 
     # Write JSON
     output = {
@@ -487,13 +579,11 @@ def main():
     print(f"Saved results + config to '{args.output_json}'")
 
     # Write HTML
-    html_report = generate_html_report(
-        config, train_scores, val_scores, test_scores, problem_type, html_dir
-    )
+    html_dir = os.path.dirname(args.output_html) or "."
+    html_report = generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes)
     with open(args.output_html, "w") as f:
         f.write(html_report)
     print(f"Saved HTML report to '{args.output_html}'")
-
 
 if __name__ == "__main__":
     main()
