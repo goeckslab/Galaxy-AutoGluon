@@ -28,22 +28,45 @@ def encode_image_to_base64(img_path):
     with open(img_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def format_config_table_html(config):
-    """Format configuration table with selected parameters."""
+def format_config_table_html(config, train_data, image_column, label_column):
+    """Format configuration table with multimodal-specific details."""
     display_keys = [
-        "model_name",
-        "time_limit",
-        "random_seed",
-        "batch_size",
+        "foundation_model",
+        "fine_tuned",
+        "modalities",
+        "fusion_method",
+        "task_type",
         "learning_rate",
+        "batch_size",
         "num_epochs",
+        "random_seed",
+        "time_limit"
     ]
     rows = []
+    
+    # Determine modalities
+    modalities = ["Image"] if image_column in train_data.columns else []
+    if any(col != label_column and col != image_column and train_data[col].dtype == 'object' for col in train_data.columns):
+        modalities.append("Text")
+    if any(col != label_column and col != image_column and train_data[col].dtype in ['int64', 'float64', 'category'] for col in train_data.columns):
+        modalities.append("Tabular")
+    
+    config_info = {
+        "foundation_model": config.get("model_name", "Pre-trained model selected by AutoGluon (e.g., timm, transformers, CLIP)"),
+        "fine_tuned": "Yes, on provided training data",
+        "modalities": ", ".join(modalities) if modalities else "N/A",
+        "fusion_method": "Automatically selected by AutoGluon (early, late, or hybrid)",
+        "task_type": config.get("problem_type", "N/A"),
+        "learning_rate": config.get("learning_rate", "Auto-selected by AutoGluon"),
+        "batch_size": config.get("batch_size", "Auto-selected by AutoGluon"),
+        "num_epochs": config.get("num_epochs", "Auto-selected by AutoGluon"),
+        "random_seed": config.get("random_seed", "N/A"),
+        "time_limit": config.get("time_limit", "None")
+    }
+    
     for key in display_keys:
-        val = config.get(key, "N/A")
-        if val == "N/A" and key in ["batch_size", "learning_rate", "num_epochs"]:
-            val = "Auto-selected by AutoGluon"
-        elif key == "learning_rate" and isinstance(val, float):
+        val = config_info.get(key, "N/A")
+        if isinstance(val, float) and key == "learning_rate":
             val = f"{val:.6f}"
         if val is not None:
             rows.append(
@@ -75,8 +98,8 @@ def format_config_table_html(config):
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div><br>"
         "<p style='text-align: center; font-size: 0.9em;'>"
         "Model trained using AutoGluon. "
-        "For more details, see the <a href='https://auto.gluon.ai/stable/api/autogluon.multimodal.MultiModalPredictor.html' target='_blank'>"
-        "official documentation</a>.</p><hr>"
+        "See <a href='https://auto.gluon.ai/stable/api/autogluon.multimodal.MultiModalPredictor.html' target='_blank'>"
+        "AutoGluon documentation</a> for details.</p><hr>"
     )
 
 def generate_table_row(cells, styles):
@@ -176,165 +199,152 @@ def format_test_stats_table_html(test_scores):
     html += "</tbody></table></div><br>"
     return html
 
-def build_tabbed_html(metrics_html, train_val_html, test_html):
-    """Build tabbed HTML structure for the report."""
-    return f"""
-<style>
-.tabs {{
-  display: flex;
-  border-bottom: 2px solid #ccc;
-  margin-bottom: 1rem;
-}}
-.tab {{
-  padding: 10px 20px;
-  cursor: pointer;
-  border: 1px solid #ccc;
-  border-bottom: none;
-  background: #f9f9f9;
-  margin-right: 5px;
-  border-top-left-radius: 8px;
-  border-top-right-radius: 8px;
-}}
-.tab.active {{
-  background: white;
-  font-weight: bold;
-}}
-.tab-content {{
-  display: none;
-  padding: 20px;
-  border: 1px solid #ccc;
-  border-top: none;
-}}
-.tab-content.active {{
-  display: block;
-}}
-</style>
-<div class="tabs">
-  <div class="tab active" onclick="showTab('metrics')">Config & Results Summary</div>
-  <div class="tab" onclick="showTab('trainval')">Train/Validation Results</div>
-  <div class="tab" onclick="showTab('test')">Test Results</div>
-</div>
-<div id="metrics" class="tab-content active">
-  {metrics_html}
-</div>
-<div id="trainval" class="tab-content">
-  {train_val_html}
-</div>
-<div id="test" class="tab-content">
-  {test_html}
-</div>
-<script>
-function showTab(id) {{
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  document.querySelector(`.tab[onclick*="${{id}}"]`).classList.add('active');
-}}
-</script>
-"""
-
-def generate_plots(y_true, y_pred, y_prob, problem_type, html_dir, classes):
-    """Generate confusion matrix, ROC-AUC, and PR-AUC plots."""
+def generate_plots(y_true, y_pred, y_prob, phase, problem_type, html_dir, classes, data=None, predictor=None):
+    """Generate plots for a specific phase (train, val, test)."""
     os.makedirs(html_dir, exist_ok=True)
     plot_files = []
 
-    # Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(10, 7))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.title('Confusion Matrix')
-    cm_path = os.path.join(html_dir, 'confusion_matrix.png')
-    plt.savefig(cm_path)
-    plt.close()
-    plot_files.append(('Confusion Matrix', cm_path))
-
-    if problem_type == "binary":
-        # Convert y_true to binary if needed
-        if not np.issubdtype(y_true.dtype, np.number):
-            y_true_bin = pd.factorize(y_true)[0]
-        else:
-            y_true_bin = y_true
-        y_score = y_prob.iloc[:, 1] if hasattr(y_prob, "columns") else y_prob[:, 1]
-
-        # ROC Curve
-        fpr, tpr, _ = roc_curve(y_true_bin, y_score)
-        roc_auc = auc(fpr, tpr)
-        plt.figure()
-        plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
-        plt.plot([0, 1], [0, 1], 'k--')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('Receiver Operating Characteristic')
-        plt.legend(loc="lower right")
-        roc_path = os.path.join(html_dir, 'roc_curves.png')
-        plt.savefig(roc_path)
+    # Confusion Matrix (classification)
+    if problem_type in ["binary", "multiclass"]:
+        cm = confusion_matrix(y_true, y_pred)
+        plt.figure(figsize=(10, 7))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.title(f'{phase} Confusion Matrix')
+        cm_path = os.path.join(html_dir, f'{phase.lower()}_confusion_matrix.png')
+        plt.savefig(cm_path)
         plt.close()
-        plot_files.append(('ROC Curve', roc_path))
+        plot_files.append((f'{phase} Confusion Matrix', cm_path))
 
-        # PR-AUC Curve
-        precision, recall, _ = precision_recall_curve(y_true_bin, y_score)
-        pr_auc = auc(recall, precision)
-        plt.figure()
-        plt.plot(recall, precision, label=f'PR curve (area = {pr_auc:.2f})')
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-        plt.title('Precision-Recall Curve')
-        plt.legend(loc="lower left")
-        pr_path = os.path.join(html_dir, 'precision_recall_curve.png')
-        plt.savefig(pr_path)
+        # Prediction Distribution
+        plt.figure(figsize=(10, 6))
+        sns.histplot(y_pred, bins=len(classes), kde=True)
+        plt.title(f'{phase} Prediction Distribution')
+        plt.xlabel('Predicted Classes')
+        plt.ylabel('Frequency')
+        dist_path = os.path.join(html_dir, f'{phase.lower()}_prediction_distribution.png')
+        plt.savefig(dist_path)
         plt.close()
-        plot_files.append(('Precision-Recall Curve', pr_path))
+        plot_files.append((f'{phase} Prediction Distribution', dist_path))
 
-    elif problem_type == "multiclass":
-        # ROC-AUC (One-vs-Rest)
-        y_true_bin = pd.get_dummies(y_true).values
-        plt.figure()
-        for i, class_name in enumerate(classes):
-            fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
-            roc_auc = auc(fpr, tpr)
-            plt.plot(fpr, tpr, label=f'{class_name} (area = {roc_auc:.2f})')
-        plt.plot([0, 1], [0, 1], 'k--')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('ROC Curves (One-vs-Rest)')
-        plt.legend(loc="lower right")
-        roc_path = os.path.join(html_dir, 'roc_curves.png')
-        plt.savefig(roc_path)
-        plt.close()
-        plot_files.append(('ROC Curves (One-vs-Rest)', roc_path))
+        # ROC and Precision-Recall Curves (for validation and test phases)
+        if phase in ["Validation", "Test"] and y_prob is not None:
+            if problem_type == "binary":
+                # Convert y_true to binary if needed
+                if not np.issubdtype(y_true.dtype, np.number):
+                    y_true_bin = pd.factorize(y_true)[0]
+                else:
+                    y_true_bin = y_true
+                y_score = y_prob.iloc[:, 1] if hasattr(y_prob, "columns") else y_prob[:, 1]
 
-        # PR-AUC (One-vs-Rest)
-        plt.figure()
-        for i, class_name in enumerate(classes):
-            precision, recall, _ = precision_recall_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
-            pr_auc = auc(recall, precision)
-            plt.plot(recall, precision, label=f'{class_name} (area = {pr_auc:.2f})')
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-        plt.title('Precision-Recall Curves (One-vs-Rest)')
-        plt.legend(loc="lower left")
-        pr_path = os.path.join(html_dir, 'precision_recall_curve.png')
-        plt.savefig(pr_path)
-        plt.close()
-        plot_files.append(('Precision-Recall Curves (One-vs-Rest)', pr_path))
+                # ROC Curve
+                fpr, tpr, _ = roc_curve(y_true_bin, y_score)
+                roc_auc = auc(fpr, tpr)
+                plt.figure(figsize=(8, 6))
+                plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], 'k--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title(f'{phase} ROC Curve')
+                plt.legend(loc="lower right")
+                roc_path = os.path.join(html_dir, f'{phase.lower()}_roc_curve.png')
+                plt.savefig(roc_path)
+                plt.close()
+                plot_files.append((f'{phase} ROC Curve', roc_path))
+
+                # Precision-Recall Curve
+                precision, recall, _ = precision_recall_curve(y_true_bin, y_score)
+                pr_auc = auc(recall, precision)
+                plt.figure(figsize=(8, 6))
+                plt.plot(recall, precision, label=f'PR curve (area = {pr_auc:.2f})')
+                plt.xlabel('Recall')
+                plt.ylabel('Precision')
+                plt.title(f'{phase} Precision-Recall Curve')
+                plt.legend(loc="lower left")
+                pr_path = os.path.join(html_dir, f'{phase.lower()}_precision_recall_curve.png')
+                plt.savefig(pr_path)
+                plt.close()
+                plot_files.append((f'{phase} Precision-Recall Curve', pr_path))
+
+            elif problem_type == "multiclass":
+                # ROC Curves (One-vs-Rest)
+                y_true_bin = pd.get_dummies(y_true).values
+                plt.figure(figsize=(10, 6))
+                for i, class_name in enumerate(classes):
+                    fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
+                    roc_auc = auc(fpr, tpr)
+                    plt.plot(fpr, tpr, label=f'{class_name} (area = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], 'k--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title(f'{phase} ROC Curves (One-vs-Rest)')
+                plt.legend(loc="lower right")
+                roc_path = os.path.join(html_dir, f'{phase.lower()}_roc_curves.png')
+                plt.savefig(roc_path)
+                plt.close()
+                plot_files.append((f'{phase} ROC Curves (One-vs-Rest)', roc_path))
+
+                # Precision-Recall Curves (One-vs-Rest)
+                plt.figure(figsize=(10, 6))
+                for i, class_name in enumerate(classes):
+                    precision, recall, _ = precision_recall_curve(y_true_bin[:, i], y_prob.iloc[:, i] if hasattr(y_prob, "columns") else y_prob[:, i])
+                    pr_auc = auc(recall, precision)
+                    plt.plot(recall, precision, label=f'{class_name} (area = {pr_auc:.2f})')
+                plt.xlabel('Recall')
+                plt.ylabel('Precision')
+                plt.title(f'{phase} Precision-Recall Curves (One-vs-Rest)')
+                plt.legend(loc="lower left")
+                pr_path = os.path.join(html_dir, f'{phase.lower()}_precision_recall_curves.png')
+                plt.savefig(pr_path)
+                plt.close()
+                plot_files.append((f'{phase} Precision-Recall Curves (One-vs-Rest)', pr_path))
 
     elif problem_type == "regression":
-        # True vs Predicted Scatter
-        plt.figure()
-        plt.scatter(y_true, y_pred, alpha=0.5)
-        plt.xlabel('True Values')
-        plt.ylabel('Predictions')
-        plt.title('True vs Predicted')
-        scatter_path = os.path.join(html_dir, 'true_vs_pred.png')
-        plt.savefig(scatter_path)
+        # Residual Plot
+        residuals = y_true - y_pred
+        plt.figure(figsize=(10, 6))
+        plt.scatter(y_pred, residuals, alpha=0.5)
+        plt.axhline(y=0, color='r', linestyle='--')
+        plt.title(f'{phase} Residual Plot')
+        plt.xlabel('Predicted Values')
+        plt.ylabel('Residuals')
+        res_path = os.path.join(html_dir, f'{phase.lower()}_residuals.png')
+        plt.savefig(res_path)
         plt.close()
-        plot_files.append(('True vs Predicted', scatter_path))
+        plot_files.append((f'{phase} Residual Plot', res_path))
+
+        # Prediction Distribution
+        plt.figure(figsize=(10, 6))
+        sns.histplot(y_pred, bins=50, kde=True)
+        plt.title(f'{phase} Prediction Distribution')
+        plt.xlabel('Predicted Values')
+        plt.ylabel('Frequency')
+        dist_path = os.path.join(html_dir, f'{phase.lower()}_prediction_distribution.png')
+        plt.savefig(dist_path)
+        plt.close()
+        plot_files.append((f'{phase} Prediction Distribution', dist_path))
+
+    # Feature Importance (for test phase, if tabular data is available)
+    if phase == "Test" and data is not None and predictor is not None:
+        try:
+            feature_importance = predictor.feature_importance(data)
+            if not feature_importance.empty:
+                plt.figure(figsize=(10, 6))
+                sns.barplot(x='importance', y=feature_importance.index, data=feature_importance)
+                plt.title(f'{phase} Feature Importance')
+                plt.xlabel('Importance Score')
+                plt.ylabel('Features')
+                fi_path = os.path.join(html_dir, f'{phase.lower()}_feature_importance.png')
+                plt.savefig(fi_path)
+                plt.close()
+                plot_files.append((f'{phase} Feature Importance', fi_path))
+        except Exception as e:
+            print(f"Warning: Could not generate feature importance plot: {e}")
 
     return plot_files
 
@@ -355,14 +365,24 @@ def render_img_section(title, plot_files):
     section_html += "</div>"
     return section_html
 
-def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes):
+def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes, train_data, val_data, test_data, image_column, label_column, predictor):
     """Generate tabbed HTML report with config, metrics, and plots."""
-    config_html = format_config_table_html(config)
+    config_html = format_config_table_html(config, train_data, image_column, label_column)
     metrics_html = format_stats_table_html(train_scores, val_scores, test_scores)
     train_val_html = format_train_val_stats_table_html(train_scores, val_scores)
     test_html = format_test_stats_table_html(test_scores)
     
-    plot_files = generate_plots(test_scores.get('y_true'), test_scores.get('y_pred'), test_scores.get('y_prob'), problem_type, html_dir, classes)
+    # Generate plots for each phase
+    train_plots = generate_plots(train_scores.get('y_true'), train_scores.get('y_pred'), train_scores.get('y_prob'), "Train", problem_type, html_dir, classes)
+    val_plots = generate_plots(val_scores.get('y_true'), val_scores.get('y_pred'), val_scores.get('y_prob'), "Validation", problem_type, html_dir, classes)
+    test_plots = generate_plots(test_scores.get('y_true'), test_scores.get('y_pred'), test_scores.get('y_prob'), "Test", problem_type, html_dir, classes, test_data, predictor)
+    
+    # Note about learning curves
+    learning_curve_note = (
+        "<p style='text-align: center; font-size: 0.9em;'>"
+        "Note: Learning curves are not available as AutoGluon does not provide epoch-wise training history by default."
+        "</p>"
+    ) if problem_type in ["binary", "multiclass"] else ""
     
     button_html = """
     <button class="help-modal-btn" id="openMetricsHelp">Model Evaluation Metrics — Help Guide</button>
@@ -389,8 +409,8 @@ def generate_html_report(config, train_scores, val_scores, test_scores, problem_
     </style>
     """
     tab1_content = button_html + config_html + metrics_html
-    tab2_content = button_html + train_val_html + render_img_section("Training & Validation Visualizations", [])  # No train/val plots yet
-    tab3_content = button_html + test_html + render_img_section("Test Visualizations", plot_files)
+    tab2_content = button_html + train_val_html + learning_curve_note + render_img_section("Training & Validation Visualizations", train_plots + val_plots)
+    tab3_content = button_html + test_html + render_img_section("Test Visualizations", test_plots)
     
     tabbed_html = build_tabbed_html(tab1_content, tab2_content, tab3_content)
     modal_html = get_metrics_help_modal()
@@ -503,7 +523,7 @@ def main():
         train_data,
         test_size=0.2,
         random_state=args.random_seed,
-        stratify=train_data[args.label_column],
+        stratify=train_data[args.label_column] if args.label_column in train_data.columns else None
     )
 
     # Expand image paths
@@ -528,7 +548,7 @@ def main():
         predictor.fit(train)
 
     # Define metrics
-    problem_type = predictor.problem_type.lower()
+    problem_type = predictor.problem_type.lower() if predictor.problem_type else "unknown"
     if problem_type == "binary":
         base_metrics = [
             "accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "f1_weighted",
@@ -552,20 +572,33 @@ def main():
     test_scores = predictor.evaluate(test_data, metrics=base_metrics)
 
     # Get predictions and probabilities
-    y_true = test_data[args.label_column]
-    y_pred = predictor.predict(test_data)
-    y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
-    classes = sorted(np.unique(y_true)) if problem_type in ["binary", "multiclass"] else []
-    
-    # Store predictions in test_scores for plot generation
-    test_scores['y_true'] = y_true
-    test_scores['y_pred'] = y_pred
-    test_scores['y_prob'] = y_prob
+    train_y_true = train[args.label_column]
+    train_y_pred = predictor.predict(train)
+    train_y_prob = predictor.predict_proba(train) if problem_type in ["binary", "multiclass"] else None
+    val_y_true = val[args.label_column]
+    val_y_pred = predictor.predict(val)
+    val_y_prob = predictor.predict_proba(val) if problem_type in ["binary", "multiclass"] else None
+    test_y_true = test_data[args.label_column]
+    test_y_pred = predictor.predict(test_data)
+    test_y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
+    classes = sorted(np.unique(train_y_true)) if problem_type in ["binary", "multiclass"] else []
+
+    # Store predictions in scores for plot generation
+    train_scores['y_true'] = train_y_true
+    train_scores['y_pred'] = train_y_pred
+    train_scores['y_prob'] = train_y_prob
+    val_scores['y_true'] = val_y_true
+    val_scores['y_pred'] = val_y_pred
+    val_scores['y_prob'] = val_y_prob
+    test_scores['y_true'] = test_y_true
+    test_scores['y_pred'] = test_y_pred
+    test_scores['y_prob'] = test_y_prob
 
     # Extract config
-    config = predictor._learner._config
+    config = predictor._learner._config if hasattr(predictor._learner, '_config') else {}
     config['random_seed'] = args.random_seed
     config['time_limit'] = args.time_limit
+    config['problem_type'] = problem_type
 
     # Write JSON
     output = {
@@ -580,7 +613,10 @@ def main():
 
     # Write HTML
     html_dir = os.path.dirname(args.output_html) or "."
-    html_report = generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes)
+    html_report = generate_html_report(
+        config, train_scores, val_scores, test_scores, problem_type, html_dir, classes,
+        train_data, val, test_data, args.image_column, args.label_column, predictor
+    )
     with open(args.output_html, "w") as f:
         f.write(html_report)
     print(f"Saved HTML report to '{args.output_html}'")
