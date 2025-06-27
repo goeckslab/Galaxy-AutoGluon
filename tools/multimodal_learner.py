@@ -13,6 +13,8 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
+import shutil
+import time
 from utils import get_metrics_help_modal
 
 # Suppress warnings
@@ -27,6 +29,19 @@ def encode_image_to_base64(img_path):
     """Encode an image file to base64 string for HTML embedding."""
     with open(img_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+def retry_rmtree(path, max_retries=3, delay=1):
+    """Retry shutil.rmtree to handle 'Device or resource busy' errors."""
+    for attempt in range(max_retries):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            if e.errno == 16:  # Device or resource busy
+                time.sleep(delay)
+                continue
+            raise
+    print(f"Warning: Failed to remove temporary directory {path} after {max_retries} attempts")
 
 def format_config_table_html(config, train_data, image_column, label_column):
     """Format configuration table with multimodal-specific details."""
@@ -199,7 +214,64 @@ def format_test_stats_table_html(test_scores):
     html += "</tbody></table></div><br>"
     return html
 
-def generate_plots(y_true, y_pred, y_prob, phase, problem_type, html_dir, classes, data=None, predictor=None):
+def build_tabbed_html(metrics_html, train_val_html, test_html):
+    """Build tabbed HTML structure for the report."""
+    return f"""
+<style>
+.tabs {{
+  display: flex;
+  border-bottom: 2px solid #ccc;
+  margin-bottom: 1rem;
+}}
+.tab {{
+  padding: 10px 20px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  border-bottom: none;
+  background: #f9f9f9;
+  margin-right: 5px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}}
+.tab.active {{
+  background: white;
+  font-weight: bold;
+}}
+.tab-content {{
+  display: none;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-top: none;
+}}
+.tab-content.active {{
+  display: block;
+}}
+</style>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('metrics')">Config & Results Summary</div>
+  <div class="tab" onclick="showTab('trainval')">Train/Validation Results</div>
+  <div class="tab" onclick="showTab('test')">Test Results</div>
+</div>
+<div id="metrics" class="tab-content active">
+  {metrics_html}
+</div>
+<div id="trainval" class="tab-content">
+  {train_val_html}
+</div>
+<div id="test" class="tab-content">
+  {test_html}
+</div>
+<script>
+function showTab(id) {{
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelector(`.tab[onclick*="${{id}}"]`).classList.add('active');
+}}
+</script>
+"""
+
+def generate_plots(y_true, y_pred, y_prob, phase, problem_type, html_dir, classes):
     """Generate plots for a specific phase (train, val, test)."""
     os.makedirs(html_dir, exist_ok=True)
     plot_files = []
@@ -329,23 +401,6 @@ def generate_plots(y_true, y_pred, y_prob, phase, problem_type, html_dir, classe
         plt.close()
         plot_files.append((f'{phase} Prediction Distribution', dist_path))
 
-    # Feature Importance (for test phase, if tabular data is available)
-    if phase == "Test" and data is not None and predictor is not None:
-        try:
-            feature_importance = predictor.feature_importance(data)
-            if not feature_importance.empty:
-                plt.figure(figsize=(10, 6))
-                sns.barplot(x='importance', y=feature_importance.index, data=feature_importance)
-                plt.title(f'{phase} Feature Importance')
-                plt.xlabel('Importance Score')
-                plt.ylabel('Features')
-                fi_path = os.path.join(html_dir, f'{phase.lower()}_feature_importance.png')
-                plt.savefig(fi_path)
-                plt.close()
-                plot_files.append((f'{phase} Feature Importance', fi_path))
-        except Exception as e:
-            print(f"Warning: Could not generate feature importance plot: {e}")
-
     return plot_files
 
 def render_img_section(title, plot_files):
@@ -365,7 +420,7 @@ def render_img_section(title, plot_files):
     section_html += "</div>"
     return section_html
 
-def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes, train_data, val_data, test_data, image_column, label_column, predictor):
+def generate_html_report(config, train_scores, val_scores, test_scores, problem_type, html_dir, classes, train_data, val_data, test_data, image_column, label_column):
     """Generate tabbed HTML report with config, metrics, and plots."""
     config_html = format_config_table_html(config, train_data, image_column, label_column)
     metrics_html = format_stats_table_html(train_scores, val_scores, test_scores)
@@ -375,7 +430,7 @@ def generate_html_report(config, train_scores, val_scores, test_scores, problem_
     # Generate plots for each phase
     train_plots = generate_plots(train_scores.get('y_true'), train_scores.get('y_pred'), train_scores.get('y_prob'), "Train", problem_type, html_dir, classes)
     val_plots = generate_plots(val_scores.get('y_true'), val_scores.get('y_pred'), val_scores.get('y_prob'), "Validation", problem_type, html_dir, classes)
-    test_plots = generate_plots(test_scores.get('y_true'), test_scores.get('y_pred'), test_scores.get('y_prob'), "Test", problem_type, html_dir, classes, test_data, predictor)
+    test_plots = generate_plots(test_scores.get('y_true'), test_scores.get('y_pred'), test_scores.get('y_prob'), "Test", problem_type, html_dir, classes)
     
     # Note about learning curves
     learning_curve_note = (
@@ -495,7 +550,7 @@ def main():
         print(f"ERROR reading test CSV at {args.test_csv}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Verify image_column
+    # Verify image_column and label_column
     if args.image_column not in train_data.columns:
         print(
             f"ERROR: The specified image_column '{args.image_column}' does not exist in train CSV.",
@@ -518,13 +573,39 @@ def main():
         )
         sys.exit(1)
 
+    if args.label_column not in train_data.columns:
+        print(
+            f"ERROR: The specified label_column '{args.label_column}' does not exist in train CSV.",
+            file=sys.stderr,
+        )
+        print(
+            f"Available columns in {args.train_csv}:\n  " + ", ".join(train_data.columns),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.label_column not in test_data.columns:
+        print(
+            f"ERROR: The specified label_column '{args.label_column}' does not exist in test CSV.",
+            file=sys.stderr,
+        )
+        print(
+            f"Available columns in {args.test_csv}:\n  " + ", ".join(test_data.columns),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Split train_data
-    train, val = train_test_split(
-        train_data,
-        test_size=0.2,
-        random_state=args.random_seed,
-        stratify=train_data[args.label_column] if args.label_column in train_data.columns else None
-    )
+    try:
+        train, val = train_test_split(
+            train_data,
+            test_size=0.2,
+            random_state=args.random_seed,
+            stratify=train_data[args.label_column] if args.label_column in train_data.columns else None
+        )
+    except ValueError as e:
+        print(f"ERROR during train/validation split: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Expand image paths
     base_folder = os.path.dirname(os.path.abspath(args.train_csv))
@@ -539,13 +620,21 @@ def main():
     )
 
     # Create predictor
-    predictor = MultiModalPredictor(label=args.label_column)
+    try:
+        predictor = MultiModalPredictor(label=args.label_column)
+    except Exception as e:
+        print(f"ERROR creating MultiModalPredictor: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Fit model
-    if args.time_limit is not None:
-        predictor.fit(train, time_limit=args.time_limit)
-    else:
-        predictor.fit(train)
+    try:
+        if args.time_limit is not None:
+            predictor.fit(train, time_limit=args.time_limit)
+        else:
+            predictor.fit(train)
+    except Exception as e:
+        print(f"ERROR during model training: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Define metrics
     problem_type = predictor.problem_type.lower() if predictor.problem_type else "unknown"
@@ -567,21 +656,29 @@ def main():
         base_metrics = ["root_mean_squared_error", "mean_absolute_error", "r2"]
 
     # Evaluate
-    train_scores = predictor.evaluate(train, metrics=base_metrics)
-    val_scores = predictor.evaluate(val, metrics=base_metrics)
-    test_scores = predictor.evaluate(test_data, metrics=base_metrics)
+    try:
+        train_scores = predictor.evaluate(train, metrics=base_metrics)
+        val_scores = predictor.evaluate(val, metrics=base_metrics)
+        test_scores = predictor.evaluate(test_data, metrics=base_metrics)
+    except Exception as e:
+        print(f"ERROR during model evaluation: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Get predictions and probabilities
-    train_y_true = train[args.label_column]
-    train_y_pred = predictor.predict(train)
-    train_y_prob = predictor.predict_proba(train) if problem_type in ["binary", "multiclass"] else None
-    val_y_true = val[args.label_column]
-    val_y_pred = predictor.predict(val)
-    val_y_prob = predictor.predict_proba(val) if problem_type in ["binary", "multiclass"] else None
-    test_y_true = test_data[args.label_column]
-    test_y_pred = predictor.predict(test_data)
-    test_y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
-    classes = sorted(np.unique(train_y_true)) if problem_type in ["binary", "multiclass"] else []
+    try:
+        train_y_true = train[args.label_column]
+        train_y_pred = predictor.predict(train)
+        train_y_prob = predictor.predict_proba(train) if problem_type in ["binary", "multiclass"] else None
+        val_y_true = val[args.label_column]
+        val_y_pred = predictor.predict(val)
+        val_y_prob = predictor.predict_proba(val) if problem_type in ["binary", "multiclass"] else None
+        test_y_true = test_data[args.label_column]
+        test_y_pred = predictor.predict(test_data)
+        test_y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
+        classes = sorted(np.unique(train_y_true)) if problem_type in ["binary", "multiclass"] else []
+    except Exception as e:
+        print(f"ERROR during prediction: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Store predictions in scores for plot generation
     train_scores['y_true'] = train_y_true
@@ -601,25 +698,36 @@ def main():
     config['problem_type'] = problem_type
 
     # Write JSON
-    output = {
-        "train_metrics": train_scores,
-        "validation_metrics": val_scores,
-        "test_metrics": test_scores,
-        "config": config,
-    }
-    with open(args.output_json, "w") as f:
-        json.dump(output, f, indent=2, default=lambda o: str(o))
-    print(f"Saved results + config to '{args.output_json}'")
+    try:
+        output = {
+            "train_metrics": train_scores,
+            "validation_metrics": val_scores,
+            "test_metrics": test_scores,
+            "config": config,
+        }
+        with open(args.output_json, "w") as f:
+            json.dump(output, f, indent=2, default=lambda o: str(o))
+        print(f"Saved results + config to '{args.output_json}'")
+    except Exception as e:
+        print(f"ERROR writing JSON output: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Write HTML
-    html_dir = os.path.dirname(args.output_html) or "."
-    html_report = generate_html_report(
-        config, train_scores, val_scores, test_scores, problem_type, html_dir, classes,
-        train_data, val, test_data, args.image_column, args.label_column, predictor
-    )
-    with open(args.output_html, "w") as f:
-        f.write(html_report)
-    print(f"Saved HTML report to '{args.output_html}'")
+    try:
+        html_dir = os.path.dirname(args.output_html) or "."
+        html_report = generate_html_report(
+            config, train_scores, val_scores, test_scores, problem_type, html_dir, classes,
+            train_data, val, test_data, args.image_column, args.label_column
+        )
+        with open(args.output_html, "w") as f:
+            f.write(html_report)
+        print(f"Saved HTML report to '{args.output_html}'")
+    except Exception as e:
+        print(f"ERROR writing HTML report: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
+    # Override shutil.rmtree with retry mechanism for NFS environments
+    import multiprocessing.util
+    multiprocessing.util._remove_temp_dir = lambda tempdir, onerror=None: retry_rmtree(tempdir)
     main()
