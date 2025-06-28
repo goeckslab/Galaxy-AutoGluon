@@ -25,13 +25,14 @@ def path_expander(path, base_folder):
     path = str(path).lstrip("/")
     return os.path.abspath(os.path.join(base_folder, path))
 
+
 def format_config_table_html(config: dict) -> str:
     """Format configuration table for AutoGluon."""
     display_keys = [
-        "model_name",
-        "time_limit",
-        "random_seed",
-        "problem_type",
+        "model_name", "time_limit", "random_seed", "problem_type",
+        "image_missing_strategy", "text_normalize", "document_missing_strategy",
+        "label_preprocessing", "optimizer_type", "learner_class",
+        "label_column", "eval_metric", "validation_metric", "pretrained"
     ]
     rows = []
     for key in display_keys:
@@ -55,6 +56,7 @@ def format_config_table_html(config: dict) -> str:
         "<table>"
         "<tr><th>Parameter</th><th>Value</th></tr>" + "".join(rows) + "</table>"
     )
+
 
 def format_stats_table_html(train_scores, val_scores, test_scores):
     """Format a combined HTML table for training, validation, and test metrics."""
@@ -121,26 +123,28 @@ def format_test_stats_table_html(test_scores):
     html += "</table>"
     return html
 
+
 def build_tabbed_html(metrics_html, train_val_html, test_html):
-    """Build tabbed HTML structure for the report and add the help button in the top left, always visible."""
-    # Place button in a fixed position in the left upper corner (all tabs)
+    """Build tabbed HTML structure with help button inside each tab."""
     help_button_html = """
-    <button class="help-modal-btn" id="openMetricsHelp" style="position:fixed;top:24px;left:32px;z-index:1001;">
-        Model Evaluation Metrics — Help Guide
-    </button>
+    <button class="help-modal-btn" id="openMetricsHelp">Model Evaluation Metrics — Help Guide</button>
     <style>
     .help-modal-btn {
         background-color: #17623b;
         color: #fff;
         border: none;
         border-radius: 24px;
-        padding: 10px 28px;
-        font-size: 1.1rem;
+        padding: 8px 20px; /* Adjusted padding for better fit */
+        font-size: 1rem; /* Slightly smaller for layout compatibility */
         font-weight: bold;
         letter-spacing: 0.03em;
         cursor: pointer;
         transition: background 0.2s, box-shadow 0.2s;
         box-shadow: 0 2px 8px rgba(23,98,59,0.07);
+        margin-bottom: 20px; /* Space below button */
+        display: block; /* Ensure it takes its own line */
+        margin-left: auto; /* Center or adjust as needed */
+        margin-right: auto;
     }
     .help-modal-btn:hover, .help-modal-btn:focus {
         background-color: #21895e;
@@ -149,14 +153,17 @@ def build_tabbed_html(metrics_html, train_val_html, test_html):
     }
     </style>
     """
+    # Add button to each tab's content
+    metrics_html = help_button_html + metrics_html
+    train_val_html = help_button_html + train_val_html
+    test_html = help_button_html + test_html
+
     tabbed_html = f"""
-{help_button_html}
 <style>
 .tabs {{
   display: flex;
   border-bottom: 2px solid #ccc;
   margin-bottom: 1rem;
-  margin-left: 125px;
 }}
 .tab {{
   padding: 10px 20px;
@@ -177,7 +184,6 @@ def build_tabbed_html(metrics_html, train_val_html, test_html):
   padding: 20px;
   border: 1px solid #ccc;
   border-top: none;
-  margin-left: 125px;
 }}
 .tab-content.active {{
   display: block;
@@ -206,10 +212,8 @@ function showTab(id) {{
 }}
 </script>
 """
-    # Add the modal after tabbed_html
     tabbed_html += get_metrics_help_modal()
     return tabbed_html
-
 
 def generate_confusion_matrix_plot(y_true, y_pred, classes, phase, temp_dir):
     """Generate and save confusion matrix plot."""
@@ -304,7 +308,8 @@ def main():
         df[args.image_column] = df[args.image_column].apply(lambda x: path_expander(str(x), base_folder))
 
     # Train model
-    predictor = MultiModalPredictor(label=args.label_column)
+    save_path = "AutogluonModels/custom_model"
+    predictor = MultiModalPredictor(label=args.label_column, path=save_path)
     if args.time_limit:
         predictor.fit(train, time_limit=args.time_limit)
     else:
@@ -328,12 +333,56 @@ def main():
     test_y_prob = predictor.predict_proba(test_data) if problem_type in ["binary", "multiclass"] else None
     classes = sorted(np.unique(test_y_true)) if problem_type in ["binary", "multiclass"] else []
 
-    # Config
+    config_path = os.path.join(save_path, "config.yaml")
+    try:
+        with open(config_path, "r") as f:
+            config_yaml = yaml.safe_load(f)
+        model_name = config_yaml["model"]["names"][0]
+        config_data = {
+            "Model Names": model_name,
+            "Image Missing Value Strategy": config_yaml["data"]["image"]["missing_value_strategy"],
+            "Text Normalize": config_yaml["data"]["text"]["normalize_text"],
+            "Document Missing Value Strategy": config_yaml["data"]["document"]["missing_value_strategy"],
+            "Label Numerical Preprocessing": config_yaml["data"]["label"]["numerical_preprocessing"],
+            "Optimizer Type": config_yaml["optim"]["optim_type"]
+        }
+    except (FileNotFoundError, KeyError) as e:
+        logger.warning(f"Error reading config.yaml: {e}. Using defaults.")
+        config_data = {}
+
+    # Read assets.json
+    assets_path = os.path.join(save_path, "assets.json")
+    try:
+        with open(assets_path, "r") as f:
+            assets = json.load(f)
+            assets_data = {
+                "Learner Class": assets["learner_class"],
+                "Label Column": assets["label_column"],
+                "Problem Type": assets["problem_type"],
+                "Evaluation Metric": assets["eval_metric_name"],
+                "Validation Metric": assets["validation_metric_name"],
+                "Pretrained": assets["pretrained"]
+            }
+    except (FileNotFoundError, KeyError) as e:
+        logger.warning(f"Error reading assets.json: {e}. Using defaults.")
+        assets_data = {}
+
+    # Combine config data
     config = {
-        "model_name": "AutoGluon MultiModal",
+        "model_name": config_data.get("Model Names", "AutoGluon MultiModal"),
         "time_limit": args.time_limit,
         "random_seed": args.random_seed,
-        "problem_type": problem_type
+        "problem_type": assets_data.get("Problem Type", problem_type),
+        "image_missing_strategy": config_data.get("Image Missing Value Strategy", "N/A"),
+        "text_normalize": config_data.get("Text Normalize", "N/A"),
+        "document_missing_strategy": config_data.get("Document Missing Value Strategy", "N/A"),
+        "label_preprocessing": config_data.get("Label Numerical Preprocessing", "N/A"),
+        "optimizer_type": config_data.get("Optimizer Type", "N/A"),
+        "learner_class": assets_data.get("Learner Class", "N/A"),
+        "label_column": assets_data.get("Label Column", args.label_column),
+        "eval_metric": assets_data.get("Evaluation Metric", "N/A"),
+        "validation_metric": assets_data.get("Validation Metric", "N/A"),
+        "pretrained": assets_data.get("Pretrained", "N/A")
     }
 
     # Save results
