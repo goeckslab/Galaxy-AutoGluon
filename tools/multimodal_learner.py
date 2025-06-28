@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
-from utils import get_html_template, get_html_closing, encode_image_to_base64
+from utils import get_html_template, get_html_closing, encode_image_to_base64, get_metrics_help_modal
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -122,13 +122,41 @@ def format_test_stats_table_html(test_scores):
     return html
 
 def build_tabbed_html(metrics_html, train_val_html, test_html):
-    """Build tabbed HTML structure for the report."""
-    return f"""
+    """Build tabbed HTML structure for the report and add the help button in the top left, always visible."""
+    # Place button in a fixed position in the left upper corner (all tabs)
+    help_button_html = """
+    <button class="help-modal-btn" id="openMetricsHelp" style="position:fixed;top:24px;left:32px;z-index:1001;">
+        Model Evaluation Metrics — Help Guide
+    </button>
+    <style>
+    .help-modal-btn {
+        background-color: #17623b;
+        color: #fff;
+        border: none;
+        border-radius: 24px;
+        padding: 10px 28px;
+        font-size: 1.1rem;
+        font-weight: bold;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        transition: background 0.2s, box-shadow 0.2s;
+        box-shadow: 0 2px 8px rgba(23,98,59,0.07);
+    }
+    .help-modal-btn:hover, .help-modal-btn:focus {
+        background-color: #21895e;
+        outline: none;
+        box-shadow: 0 4px 16px rgba(23,98,59,0.14);
+    }
+    </style>
+    """
+    tabbed_html = f"""
+{help_button_html}
 <style>
 .tabs {{
   display: flex;
   border-bottom: 2px solid #ccc;
   margin-bottom: 1rem;
+  margin-left: 125px;
 }}
 .tab {{
   padding: 10px 20px;
@@ -149,6 +177,7 @@ def build_tabbed_html(metrics_html, train_val_html, test_html):
   padding: 20px;
   border: 1px solid #ccc;
   border-top: none;
+  margin-left: 125px;
 }}
 .tab-content.active {{
   display: block;
@@ -177,6 +206,10 @@ function showTab(id) {{
 }}
 </script>
 """
+    # Add the modal after tabbed_html
+    tabbed_html += get_metrics_help_modal()
+    return tabbed_html
+
 
 def generate_confusion_matrix_plot(y_true, y_pred, classes, phase, temp_dir):
     """Generate and save confusion matrix plot."""
@@ -284,7 +317,7 @@ def main():
         "multiclass": ["accuracy", "f1_macro", "precision_macro", "recall_macro"],
         "regression": ["root_mean_squared_error", "mean_absolute_error", "r2"]
     }.get(problem_type, ["root_mean_squared_error"])
-    
+
     train_scores = predictor.evaluate(train, metrics=metrics)
     val_scores = predictor.evaluate(val, metrics=metrics)
     test_scores = predictor.evaluate(test_data, metrics=metrics)
@@ -298,7 +331,6 @@ def main():
     # Config
     config = {
         "model_name": "AutoGluon MultiModal",
-许可证
         "time_limit": args.time_limit,
         "random_seed": args.random_seed,
         "problem_type": problem_type
