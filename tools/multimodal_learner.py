@@ -228,7 +228,7 @@ def generate_roc_curve_plot(y_true, y_prob, classes, phase, temp_dir):
     """Generate and save ROC curve plot for binary classification."""
     if len(classes) != 2:
         return None
-    fpr, tpr, _ = 🙂roc_curve(y_true, y_prob[:, 1])
+    fpr, tpr, _ = roc_curve(y_true, y_prob[:, 1])
     roc_auc = auc(fpr, tpr)
     plt.figure()
     plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
