@@ -126,39 +126,76 @@ document.addEventListener("DOMContentLoaded", function() {
 
 def get_html_template():
     return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoGluon Model Report</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-        h1 { color: #333; text-align: center; }
-        h2 { color: #555; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 20px;
-            background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        th, td {
-            padding: 8px;
-            text-align: center;
-            vertical-align: middle;
-            border: 1px solid #ddd;
-            white-space: nowrap; /* Prevent text wrapping */
-            min-width: 100px; /* Ensure sufficient width */
-        }
-        th { background: #f0f0f0; font-weight: bold; }
-        tr:nth-child(even) { background: #fafafa; }
-        .plot { margin: 20px 0; text-align: center; }
-        img { max-width: 100%; height: auto; }
-    </style>
-</head>
-<body>
-"""
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Galaxy-Ludwig Report</title>
+        <style>
+          body {
+              font-family: Arial, sans-serif;
+              margin: 0;
+              padding: 20px;
+              background-color: #f4f4f4;
+          }
+          .container {
+              max-width: 800px;
+              margin: auto;
+              background: white;
+              padding: 20px;
+              box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+              overflow-x: auto;
+          }
+          h1 {
+              text-align: center;
+              color: #333;
+          }
+          h2 {
+              border-bottom: 2px solid #4CAF50;
+              color: #4CAF50;
+              padding-bottom: 5px;
+          }
+          table {
+              border-collapse: collapse;
+              margin: 20px 0;
+              width: 100%;
+              table-layout: fixed; /* Enforces consistent column widths */
+          }
+          table, th, td {
+              border: 1px solid #ddd;
+          }
+          th, td {
+              padding: 8px;
+              text-align: center; /* Center-align text */
+              vertical-align: middle; /* Center-align content vertically */
+              word-wrap: break-word; /* Break long words to avoid overflow */
+          }
+          th:first-child, td:first-child {
+              width: 5%; /* Smaller width for the first column */
+          }
+          th:nth-child(2), td:nth-child(2) {
+              width: 50%; /* Wider for the metric/description column */
+          }
+          th:last-child, td:last-child {
+              width: 25%; /* Value column gets remaining space */
+          }
+          th {
+              background-color: #4CAF50;
+              color: white;
+          }
+          .plot {
+              text-align: center;
+              margin: 20px 0;
+          }
+          .plot img {
+              max-width: 100%;
+              height: auto;
+          }
+        </style>
+    </head>
+    <body>
+    <div class="container">
+    """
+
 
 def get_html_closing():
     return """
