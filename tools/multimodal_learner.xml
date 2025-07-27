@@ -1,21 +1,66 @@
-<tool id="multimodal_learner" name="MultiModal Learner">
-    <command><![CDATA[
-        #if $raw_data
-            unzip -o -q '$raw_data' -d ./
-        #end if
-        python '$__tool_directory__/multimodal_learner.py'
-            --input_csv_train '$input_csv_train'
-            --input_csv_test '$input_csv_test'
-            --target_column '$target_column'
-            --output_csv '$model_metrics'
-    ]]></command>
-    <inputs>
-        <param name="input_csv_train" type="data" format="csv" label="Input Train CSV File"/>
-        <param name="input_csv_test" type="data" format="csv" label="Input Test CSV File" />
-        <param name="raw_data" type="data" format="zip" label="Zip File with Images"/>
-        <param name="target_column" type="text" label="Target Column Name"/>
-    </inputs>
-    <outputs>
-        <data name="model_metrics" format="csv" label="model_metrics.csv"/>
-    </outputs>
+<tool id="autogluon_multimodal" name="AutoGluon Multimodal Learner" version="1.0.0">
+  <description>
+    Train an AutoGluon MultiModal model, evaluate on train/validation/test,
+    and produce a CSV of metrics plus an interactive HTML report.
+  </description>
+
+  <command detect_errors="exit_code">
+    <![CDATA[
+    python multimodal_learner.py \
+      --input_csv_train '${input_csv_train}' \
+      --input_csv_test  '${input_csv_test}' \
+      --target_column   '${target_column}' \
+      --image_column    '${image_column}' \
+      --random_seed     ${random_seed} \
+      --output_csv      '${output_csv}' \
+      --output_json     '${output_json}' \
+      --output_html     '${output_html}'
+    ]]>
+  </command>
+
+  <inputs>
+    <param name="input_csv_train" type="data" format="csv" label="Training CSV" />
+    <param name="input_csv_test"  type="data" format="csv" label="Test CSV" />
+    <param name="target_column"   type="text"          label="Target column name"   value="er_status_by_ihc" />
+    <param name="image_column"    type="text"          label="Image path column"     value="filename" />
+    <param name="random_seed"     type="integer"       label="Random seed"           value="42" />
+  </inputs>
+
+  <outputs>
+    <data name="output_csv" format="csv" label="Model metrics CSV" />
+    <data name="output_json" format="json" label="Full metrics JSON" />
+    <data name="output_html" format="html" label="Interactive HTML report" />
+  </outputs>
+
+  <requirements>
+    <requirement type="package">pandas</requirement>
+    <requirement type="package">numpy</requirement>
+    <requirement type="package">torch</requirement>
+    <requirement type="package">autogluon.multimodal</requirement>
+    <requirement type="package">scikit-learn</requirement>
+    <requirement type="package">matplotlib</requirement>
+    <requirement type="package">seaborn</requirement>
+  </requirements>
+
+  <help>
+    This tool will:
+
+    1. Load your training and test CSVs (each must include the target column and the image-path column).
+    2. Split the training CSV into train/validation (80/20 stratified).
+    3. Train an AutoGluon MultiModal model on train → validate on the held-out validation fold.
+    4. Evaluate on train, validation, and test sets.
+    5. Emit:
+       - A **CSV** (`output_csv`) summarizing metrics for each phase.
+       - A **JSON** (`output_json`) containing full metrics plus AutoGluon’s internal `fit_summary()`.
+       - An **HTML** (`output_html`) report with tabs, buttons, sortable tables, and confusion/ROC plots, styled identically to the Tabular/Image Learner reports.
+
+    **Parameters**  
+    • *Training CSV*: path to CSV with columns for `target_column` and `image_column`.  
+    • *Test CSV*: held-out CSV of the same schema.  
+    • *Target column*: the label column to predict.  
+    • *Image column*: the CSV column containing image filenames (relative to the working directory).  
+    • *Random seed*: integer for reproducibility.
+
+    Make sure your image files are present in Galaxy’s working directory (e.g. uploaded as a separate dataset collection). The HTML report uses the same color scheme, tabs, and help modal as your existing Tabular Learner reports.
+  </help>
 </tool>
