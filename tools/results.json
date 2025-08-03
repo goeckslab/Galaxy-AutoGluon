@@ -1,26 +1,27 @@
 {
-  "train_metrics": {
-    "accuracy": 0.713623395149786,
-    "f1_macro": 0.35237259041443336,
-    "precision_macro": 0.41454681239938485,
-    "recall_macro": 0.33796879888874637
+  "train": {
+    "accuracy": 0.575,
+    "roc_auc": 0.7358730158730159,
+    "precision": 0.5733333333333334,
+    "recall": 0.9555555555555556,
+    "f1": 0.7166666666666667
   },
-  "val_metrics": {
-    "accuracy": 0.7061340941512125,
-    "f1_macro": 0.3269047330307225,
-    "precision_macro": 0.39374180411058257,
-    "recall_macro": 0.3205605171092977
+  "val": {
+    "accuracy": 0.6,
+    "roc_auc": 0.6363636363636364,
+    "precision": 0.5882352941176471,
+    "recall": 0.9090909090909091,
+    "f1": 0.7142857142857143
   },
-  "test_metrics": {
-    "accuracy": 0.6935108153078203,
-    "f1_macro": 0.3181092498399819,
-    "precision_macro": 0.37303845156488824,
-    "recall_macro": 0.3077037531346637
+  "test": {
+    "accuracy": 0.58,
+    "roc_auc": 0.4533106960950764,
+    "precision": 0.6086956521739131,
+    "recall": 0.9032258064516129,
+    "f1": 0.7272727272727273
   },
-  "config": {
-    "model_name": "AutoGluon MultiModal",
-    "time_limit": 90,
-    "random_seed": 42,
-    "problem_type": "multiclass"
+  "fit_summary": {
+    "val_roc_auc": 0.6262626647949219,
+    "training_time": 190.4049355983734
   }
 }
