@@ -1,21 +1,78 @@
-<tool id="multimodal_learner" name="MultiModal Learner">
-    <command><![CDATA[
-        #if $raw_data
-            unzip -o -q '$raw_data' -d ./
-        #end if
-        python '$__tool_directory__/multimodal_learner.py'
-            --input_csv_train '$input_csv_train'
-            --input_csv_test '$input_csv_test'
-            --target_column '$target_column'
-            --output_csv '$model_metrics'
-    ]]></command>
-    <inputs>
-        <param name="input_csv_train" type="data" format="csv" label="Input Train CSV File"/>
-        <param name="input_csv_test" type="data" format="csv" label="Input Test CSV File" />
-        <param name="raw_data" type="data" format="zip" label="Zip File with Images"/>
-        <param name="target_column" type="text" label="Target Column Name"/>
-    </inputs>
-    <outputs>
-        <data name="model_metrics" format="csv" label="model_metrics.csv"/>
-    </outputs>
+<tool id="autogluon_multimodal_learner" name="AutoGluon Multimodal Learner" version="0.1.0">
+  <description>Train and evaluate an AutoGluon MultiModal model</description>
+
+  <requirements>
+    <container type="docker">autogluon:latest</container>
+    <requirement type="package" version="1.4.0">autogluon.multimodal</requirement>
+    <requirement type="package" version="2.3.1">pandas</requirement>
+    <requirement type="package" version="2.3.2">numpy</requirement>
+    <requirement type="package" version="2.7.1">torch</requirement>
+    <requirement type="package" version="1.7.1">scikit-learn</requirement>
+    <requirement type="package" version="3.10.5">matplotlib</requirement>
+    <requirement type="package" version="0.13.2">seaborn</requirement>
+  </requirements>
+
+  <command detect_errors="aggressive"><![CDATA[
+  python "$__tool_directory__/multimodal_learner.py"
+  --input_csv_train '$input_csv_train'
+  --input_csv_test '$input_csv_test'
+  --target_column '$target_column'
+  #if str($use_images) == "yes":
+  --image_column '$image_column'
+  --images_zip '$images_zip'
+  #end if
+  --random_seed $random_seed
+  #if $time_limit:
+  --time_limit $time_limit
+  #end if
+  --output_csv '$output_csv'
+  --output_json '$output_json'
+  --output_html '$output_html'
+    ]]>
+  </command>
+  <inputs>
+    <param name="input_csv_train" type="data" format="csv" label="Training CSV" />
+    <param name="input_csv_test" type="data" format="csv" label="Test CSV" />
+    <param name="target_column" type="data_column" data_ref="input_csv_train" use_header_names="true" numerical="false" label="Target Column" />
+
+    <param name="use_images" type="boolean" label="Use Images?" truevalue="yes" falsevalue="no" checked="false" />
+    <param name="image_column" type="data_column" data_ref="input_csv_train" use_header_names="true" numerical="false" label="Image Column" optional="true" />
+    <param name="images_zip" type="data" format="zip" label="Images ZIP" optional="true" />
+
+    <param name="random_seed" type="integer" value="42" label="Random Seed" />
+    <param name="time_limit" type="integer" optional="true" label="Time Limit (seconds)" />
+  </inputs>
+
+  <outputs>
+    <data name="output_csv" format="csv" label="Metrics CSV" />
+    <data name="output_json" format="json" label="Full Results JSON" />
+    <data name="output_html" format="html" label="HTML Report" />
+  </outputs>
+
+  <help><![CDATA[
+This tool trains and evaluates an AutoGluon MultiModal model using tabular and optionally image data.
+
+**Steps performed:**
+1. Load training and test CSVs (with optional image paths).
+2. Split training data into training/validation (80/20 stratified).
+3. Train AutoGluon MultiModal model.
+4. Evaluate on train, validation, and test.
+5. Save:
+   - CSV with metrics for each phase.
+   - JSON with full results and fit summary.
+   - HTML report with visualizations.
+
+**Parameters:**
+- *Training CSV*: Input training data.
+- *Test CSV*: Input test data.
+- *Target Column*: Label to predict.
+- *Use Images?*: Toggle image usage. If enabled, provide image ZIP and image column.
+- *Random Seed*: For reproducibility.
+- *Time Limit*: Optional training time limit.
+
+Outputs:
+- `output_csv`: Summary metrics (CSV)
+- `output_json`: Full evaluation details (JSON)
+- `output_html`: Interactive visual report
+  ]]></help>
 </tool>
