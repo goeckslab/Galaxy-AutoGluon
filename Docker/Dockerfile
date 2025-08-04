@@ -28,3 +28,5 @@ RUN pip install --no-cache-dir pyarrow==20.0.0
 
 # Install matplotlib and seaborn for plotting in the script
 RUN pip install --no-cache-dir matplotlib seaborn
+
+RUN pip install shap
