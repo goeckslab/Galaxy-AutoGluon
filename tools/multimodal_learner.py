@@ -17,6 +17,17 @@ from sklearn.metrics import auc, confusion_matrix, roc_curve
 from sklearn.model_selection import train_test_split
 
 from feature_help_modal import get_metrics_help_modal
+from plot_generator import (
+    generate_calibration_plot,
+    generate_confusion_matrix_plot,
+    generate_metric_comparison_bar,
+    generate_per_class_metrics_plot,
+    generate_pr_curve_plot,
+    generate_residual_histogram,
+    generate_residual_plot,
+    generate_roc_curve_plot,
+    generate_scatter_plot,
+)
 from utils import (
     build_tabbed_html,
     encode_image_to_base64,
@@ -187,7 +198,7 @@ def main():
     logger.info("Starting AutoGluon MultiModal training...")
     predictor = MultiModalPredictor(
         label=args.label_column,
-        path="AutogluonModels",
+        path=None,
     )
     predictor.fit(
         train_data=df_train,
@@ -207,9 +218,42 @@ def main():
     else:
         kind = "other"
     metrics_map = {
-        "binary": ["accuracy", "roc_auc", "precision", "recall", "f1"],
-        "multiclass": ["accuracy", "f1_macro", "precision_macro", "recall_macro"],
-        "regression": ["root_mean_squared_error", "mean_absolute_error", "r2"],
+        "binary": [
+            "accuracy",
+            "balanced_accuracy",
+            "f1",
+            "precision",
+            "recall",
+            "roc_auc",
+            "average_precision",
+            "mcc",
+            "log_loss",
+        ],
+        "multiclass": [
+            "accuracy",
+            "balanced_accuracy",
+            "f1_macro",
+            "f1_micro",
+            "f1_weighted",
+            "precision_macro",
+            "precision_micro",
+            "precision_weighted",
+            "recall_macro",
+            "recall_micro",
+            "recall_weighted",
+            "mcc",
+            "log_loss",
+            "roc_auc_ovo_macro",
+            "roc_auc_ovr_macro",
+        ],
+        "regression": [
+            "root_mean_squared_error",
+            "mean_squared_error",
+            "mean_absolute_error",
+            "median_absolute_error",
+            "mean_absolute_percentage_error",
+            "r2",
+        ],
     }
     metrics = metrics_map.get(kind, ["accuracy"])
     train_scores = predictor.evaluate(df_train, metrics=metrics)
@@ -253,7 +297,7 @@ def main():
         "Time Limit (s)": args.time_limit or "unbounded",
         "Random Seed": args.random_seed,
         "Problem Type": problem_type,
-        "AutoGluon Path": os.path.abspath("AutogluonModels"),
+        "AutoGluon Path": os.path.abspath(predictor.path),
     }
     cfg_rows = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in config.items())
     summary_html = (
@@ -278,62 +322,86 @@ def main():
         + "</table>"
     )
 
-    # 2) test-only details + plots
+    # Prepare for plots
     tmpdir = tempfile.mkdtemp()
     y_true = df_test[args.label_column]
     y_pred = predictor.predict(df_test)
-    plots = []
-    if kind in ["binary", "multiclass"]:
-        cm = confusion_matrix(y_true, y_pred)
-        plt.figure(figsize=(6, 5))
-        sns.heatmap(
-            cm,
-            annot=True,
-            fmt="d",
-            xticklabels=sorted(y_true.unique()),
-            yticklabels=sorted(y_true.unique()),
-            cmap="Blues",
+
+    # Collect scores for metric comparison plot
+    common_metrics = set(train_scores) & set(val_scores) & set(test_scores)
+    scores_for_plot = {
+        m: [train_scores[m], val_scores[m], test_scores[m]] for m in common_metrics if isinstance(train_scores[m], (int, float))
+    }
+    metric_bar_path = os.path.join(tmpdir, "metric_comparison.png")
+    generate_metric_comparison_bar(scores_for_plot, path=metric_bar_path)
+    summary_plots = [("Metric Comparison", metric_bar_path)]
+
+    # Add visualizations to summary_html
+    summary_html += (
+        "<h2>Visualizations</h2>"
+        + "".join(
+            f"<div class='plot'><h3>{title}</h3>"
+            f"<img src='data:image/png;base64,{encode_image_to_base64(path)}'/></div>"
+            for title, path in summary_plots
         )
-        plt.title("Test Confusion Matrix")
+    )
+
+    # 2) test-only details + plots
+    test_plots = []
+    if kind in ["binary", "multiclass"]:
+        classes = predictor.class_labels
         cm_path = os.path.join(tmpdir, "confusion_matrix.png")
-        plt.savefig(cm_path)
-        plt.close()
-        plots.append(("Confusion Matrix", cm_path))
+        generate_confusion_matrix_plot(
+            y_true, y_pred, classes=classes, title="Test Confusion Matrix", path=cm_path
+        )
+        test_plots.append(("Confusion Matrix", cm_path))
+
+        per_class_path = os.path.join(tmpdir, "per_class_metrics.png")
+        generate_per_class_metrics_plot(
+            y_true, y_pred, title="Test Per-Class Metrics", path=per_class_path
+        )
+        test_plots.append(("Per-Class Metrics", per_class_path))
 
         if kind == "binary":
-            classes = predictor.class_labels
-            positive_class = classes[1]  # Assume second class is positive
-            y_prob = predictor.predict_proba(df_test)[positive_class]
-            fpr, tpr, _ = roc_curve(y_true, y_prob, pos_label=positive_class)
-            roc_auc = auc(fpr, tpr)
-            plt.figure()
-            plt.plot(fpr, tpr, label=f"AUC={roc_auc:.2f}")
-            plt.plot([0, 1], [0, 1], "k--")
-            plt.title("Test ROC Curve")
-            plt.xlabel("FPR")
-            plt.ylabel("TPR")
-            plt.legend(loc="lower right")
+            positive_class = classes[1]
+            y_prob = predictor.predict_proba(df_test)[positive_class].values
+            y_true_bin = (y_true == positive_class).astype(int)
+
             roc_path = os.path.join(tmpdir, "roc_curve.png")
-            plt.savefig(roc_path)
-            plt.close()
-            plots.append(("ROC Curve", roc_path))
+            generate_roc_curve_plot(
+                y_true_bin, y_prob, title="Test ROC Curve", path=roc_path
+            )
+            test_plots.append(("ROC Curve", roc_path))
+
+            pr_path = os.path.join(tmpdir, "pr_curve.png")
+            generate_pr_curve_plot(
+                y_true_bin, y_prob, title="Test Precision-Recall Curve", path=pr_path
+            )
+            test_plots.append(("Precision-Recall Curve", pr_path))
+
+            cal_path = os.path.join(tmpdir, "calibration_plot.png")
+            generate_calibration_plot(
+                y_true_bin, y_prob, title="Test Calibration Plot", path=cal_path
+            )
+            test_plots.append(("Calibration Plot", cal_path))
     elif kind == "regression":
-        plt.figure(figsize=(6, 5))
-        plt.scatter(y_true, y_pred, alpha=0.5)
-        plt.plot(
-            [min(y_true), max(y_true)],
-            [min(y_true), max(y_true)],
-            "r--",
-            label="Perfect Fit",
-        )
-        plt.title("Predicted vs Actual (Test)")
-        plt.xlabel("Actual Values")
-        plt.ylabel("Predicted Values")
-        plt.legend()
         scatter_path = os.path.join(tmpdir, "scatter_plot.png")
-        plt.savefig(scatter_path)
-        plt.close()
-        plots.append(("Predicted vs Actual", scatter_path))
+        generate_scatter_plot(
+            y_true, y_pred, title="Test Predicted vs Actual", path=scatter_path
+        )
+        test_plots.append(("Predicted vs Actual", scatter_path))
+
+        residual_path = os.path.join(tmpdir, "residual_plot.png")
+        generate_residual_plot(
+            y_true, y_pred, title="Test Residual Plot", path=residual_path
+        )
+        test_plots.append(("Residual Plot", residual_path))
+
+        hist_path = os.path.join(tmpdir, "residual_histogram.png")
+        generate_residual_histogram(
+            y_true, y_pred, title="Test Residual Histogram", path=hist_path
+        )
+        test_plots.append(("Residual Histogram", hist_path))
 
     test_html = (
         "<h2>Test Metrics Detail</h2>"
@@ -346,7 +414,7 @@ def main():
         + "".join(
             f"<div class='plot'><h3>{title}</h3>"
             f"<img src='data:image/png;base64,{encode_image_to_base64(path)}'/></div>"
-            for title, path in plots
+            for title, path in test_plots
         )
     )
 
