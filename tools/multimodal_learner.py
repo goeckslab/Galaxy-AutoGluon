@@ -53,13 +53,13 @@ def main():
         "--input_csv_train",
         dest="train_csv",
         required=True,
-        help="Galaxy input train CSV",
+        help="Galaxy input train CSV (or full CSV if no test provided)",
     )
     parser.add_argument(
         "--input_csv_test",
         dest="test_csv",
-        required=True,
-        help="Galaxy input test CSV",
+        default=None,
+        help="Galaxy input test CSV (optional; if not provided, split from train_csv)",
     )
     parser.add_argument(
         "--target_column",
@@ -144,10 +144,45 @@ def main():
                 logger.error(f"Failed to extract images ZIP: {e}")
                 sys.exit(1)
 
-    # Load CSVs
+    # Load CSVs and handle splitting
     try:
-        df_train_full = pd.read_csv(args.train_csv)
-        df_test = pd.read_csv(args.test_csv)
+        if args.test_csv:
+            df_train_full = pd.read_csv(args.train_csv)
+            df_test = pd.read_csv(args.test_csv)
+            stratify_col = (
+                df_train_full[args.label_column]
+                if df_train_full[args.label_column].nunique() > 1
+                else None
+            )
+            df_train, df_val = train_test_split(
+                df_train_full,
+                test_size=0.2,
+                random_state=args.random_seed,
+                stratify=stratify_col,
+            )
+        else:
+            df_full = pd.read_csv(args.train_csv)
+            stratify_col = (
+                df_full[args.label_column] if df_full[args.label_column].nunique() > 1 else None
+            )
+            df_train_temp, df_test = train_test_split(
+                df_full,
+                test_size=0.2,
+                random_state=args.random_seed,
+                stratify=stratify_col,
+            )
+            stratify_col = (
+                df_train_temp[args.label_column]
+                if df_train_temp[args.label_column].nunique() > 1
+                else None
+            )
+            df_train, df_val = train_test_split(
+                df_train_temp,
+                test_size=0.125,
+                random_state=args.random_seed,
+                stratify=stratify_col,
+            )
+            df_train_full = df_train_temp  # For consistency in later code if needed
     except Exception as e:
         logger.error(f"Failed to read input CSVs: {e}")
         sys.exit(1)
@@ -157,15 +192,23 @@ def main():
         if col_arg and col_arg.isdigit():
             col_idx = int(col_arg) - 1  # Galaxy columns start at 1
             if col_idx < 0 or col_idx >= len(df.columns):
-                logger.error(f"Invalid {arg_name} index {col_arg} (out of range 1-{len(df.columns)})")
+                logger.error(
+                    f"Invalid {arg_name} index {col_arg} (out of range 1-{len(df.columns)})"
+                )
                 sys.exit(1)
             mapped_col = df.columns[col_idx]
-            logger.info(f"Mapped {arg_name} index {col_arg} to column name '{mapped_col}'")
+            logger.info(
+                f"Mapped {arg_name} index {col_arg} to column name '{mapped_col}'"
+            )
             return mapped_col
         return col_arg
 
-    args.label_column = map_column_arg(args.label_column, df_train_full, "target_column")
-    args.image_column = map_column_arg(args.image_column, df_train_full, "image_column")
+    args.label_column = map_column_arg(
+        args.label_column, df_train_full, "target_column"
+    )
+    args.image_column = map_column_arg(
+        args.image_column, df_train_full, "image_column"
+    )
 
     # Verify columns
     for df, name in [(df_train_full, "train"), (df_test, "test")]:
@@ -176,20 +219,16 @@ def main():
             logger.error(f"Missing image column '{args.image_column}' in {name} CSV")
             sys.exit(1)
 
-    # Split train → train/val (80/20 stratified)
-    stratify_col = df_train_full[args.label_column] if df_train_full[args.label_column].nunique() > 1 else None
-    df_train, df_val = train_test_split(
-        df_train_full,
-        test_size=0.2,
-        random_state=args.random_seed,
-        stratify=stratify_col,
+    logger.info(
+        f"Split: {len(df_train)} train / {len(df_val)} val / {len(df_test)} test"
     )
-    logger.info(f"Split: {len(df_train)} train / {len(df_val)} val / {len(df_test)} test")
 
     # Expand image paths if using images
     if args.image_column:
         for df in (df_train, df_val, df_test):
-            df[args.image_column] = df[args.image_column].apply(lambda p: path_expander(str(p), base_folder))
+            df[args.image_column] = df[args.image_column].apply(
+                lambda p: path_expander(str(p), base_folder)
+            )
 
     # Prepare column_types if images
     column_types = {args.image_column: "image_path"} if args.image_column else None
@@ -330,7 +369,9 @@ def main():
     # Collect scores for metric comparison plot
     common_metrics = set(train_scores) & set(val_scores) & set(test_scores)
     scores_for_plot = {
-        m: [train_scores[m], val_scores[m], test_scores[m]] for m in common_metrics if isinstance(train_scores[m], (int, float))
+        m: [train_scores[m], val_scores[m], test_scores[m]]
+        for m in common_metrics
+        if isinstance(train_scores[m], (int, float))
     }
     metric_bar_path = os.path.join(tmpdir, "metric_comparison.png")
     generate_metric_comparison_bar(scores_for_plot, path=metric_bar_path)
@@ -355,30 +396,25 @@ def main():
             y_true, y_pred, classes=classes, title="Test Confusion Matrix", path=cm_path
         )
         test_plots.append(("Confusion Matrix", cm_path))
-
         per_class_path = os.path.join(tmpdir, "per_class_metrics.png")
         generate_per_class_metrics_plot(
             y_true, y_pred, title="Test Per-Class Metrics", path=per_class_path
         )
         test_plots.append(("Per-Class Metrics", per_class_path))
-
         if kind == "binary":
             positive_class = classes[1]
             y_prob = predictor.predict_proba(df_test)[positive_class].values
             y_true_bin = (y_true == positive_class).astype(int)
-
             roc_path = os.path.join(tmpdir, "roc_curve.png")
             generate_roc_curve_plot(
                 y_true_bin, y_prob, title="Test ROC Curve", path=roc_path
             )
             test_plots.append(("ROC Curve", roc_path))
-
             pr_path = os.path.join(tmpdir, "pr_curve.png")
             generate_pr_curve_plot(
                 y_true_bin, y_prob, title="Test Precision-Recall Curve", path=pr_path
             )
             test_plots.append(("Precision-Recall Curve", pr_path))
-
             cal_path = os.path.join(tmpdir, "calibration_plot.png")
             generate_calibration_plot(
                 y_true_bin, y_prob, title="Test Calibration Plot", path=cal_path
@@ -390,19 +426,16 @@ def main():
             y_true, y_pred, title="Test Predicted vs Actual", path=scatter_path
         )
         test_plots.append(("Predicted vs Actual", scatter_path))
-
         residual_path = os.path.join(tmpdir, "residual_plot.png")
         generate_residual_plot(
             y_true, y_pred, title="Test Residual Plot", path=residual_path
         )
         test_plots.append(("Residual Plot", residual_path))
-
         hist_path = os.path.join(tmpdir, "residual_histogram.png")
         generate_residual_histogram(
             y_true, y_pred, title="Test Residual Histogram", path=hist_path
         )
         test_plots.append(("Residual Histogram", hist_path))
-
     test_html = (
         "<h2>Test Metrics Detail</h2>"
         + "".join(
