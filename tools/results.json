@@ -34,6 +34,6 @@
   },
   "fit_summary": {
     "val_roc_auc": 0.6262626647949219,
-    "training_time": 213.51213479042053
+    "training_time": 150.81045699119568
   }
 }
