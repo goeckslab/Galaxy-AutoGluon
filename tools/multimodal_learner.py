@@ -1,4 +1,3 @@
-# multimodal_learner.py
 import argparse
 import json
 import logging
