@@ -1,3 +1,4 @@
+# multimodal_learner.py
 import argparse
 import json
 import logging
@@ -10,10 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import random
-import seaborn as sns
 import torch
 from autogluon.multimodal import MultiModalPredictor
-from sklearn.metrics import auc, confusion_matrix, roc_curve
 from sklearn.model_selection import train_test_split
 
 from feature_help_modal import get_metrics_help_modal
@@ -27,6 +26,9 @@ from plot_generator import (
     generate_residual_plot,
     generate_roc_curve_plot,
     generate_scatter_plot,
+    generate_shap_summary_plot,
+    generate_shap_force_plot,
+    generate_shap_waterfall_plot,
 )
 from utils import (
     build_tabbed_html,
@@ -418,8 +420,52 @@ def main():
         )
     )
 
-    # 3) feature tab placeholder
-    feature_html = "<p><em>Feature importance is not available for multimodal models.</em></p>"
+    # 3) feature tab with SHAP if possible
+    feature_html = "<p><em>Feature importance is not available for this model.</em></p>"
+    feature_plots = []
+    try:
+        import shap
+
+        if args.image_column:
+            raise ValueError("SHAP not supported for models with image data")
+
+        df_shap = df_test.drop(columns=[args.label_column]).sample(
+            min(50, len(df_test)), random_state=args.random_seed
+        )
+
+        def model_func(df):
+            if kind == "regression":
+                return predictor.predict(df).values
+            else:
+                return predictor.predict_proba(df).values
+
+        explainer = shap.Explainer(model_func, df_shap)
+
+        shap_values = explainer(df_shap)
+
+        summary_path = os.path.join(tmpdir, "shap_summary.png")
+        generate_shap_summary_plot(shap_values, df_shap, path=summary_path)
+        feature_plots.append(("SHAP Summary", summary_path))
+
+        instance = df_shap.iloc[0:1]
+        force_path = os.path.join(tmpdir, "shap_force.png")
+        generate_shap_force_plot(explainer, instance, path=force_path)
+        feature_plots.append(("SHAP Force Plot (Sample)", force_path))
+
+        waterfall_path = os.path.join(tmpdir, "shap_waterfall.png")
+        generate_shap_waterfall_plot(explainer, instance, path=waterfall_path)
+        feature_plots.append(("SHAP Waterfall Plot (Sample)", waterfall_path))
+
+        feature_html = (
+            "<h2>Feature Importance via SHAP</h2>"
+            + "".join(
+                f"<div class='plot'><h3>{title}</h3>"
+                f"<img src='data:image/png;base64,{encode_image_to_base64(path)}'/></div>"
+                for title, path in feature_plots
+            )
+        )
+    except Exception as e:
+        logger.warning(f"SHAP explanation failed: {e}")
 
     # Assemble tabs + help modal (placed outside tabs for proper display)
     full_html = (
