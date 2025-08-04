@@ -1,7 +1,5 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     average_precision_score,
@@ -11,85 +9,117 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 def save_plot(fig, path):
-    """Save the figure to the specified path and close it."""
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
+    """Save the Plotly figure to the specified path."""
+    if path:
+        fig.write_image(path)
 
 
 def generate_confusion_matrix_plot(
     y_true, y_pred, classes=None, title="Confusion Matrix", path=None
 ):
-    """Generate and save a confusion matrix heatmap."""
+    """Generate and save a confusion matrix heatmap using Plotly."""
     if classes is None:
         classes = sorted(set(y_true) | set(y_pred))
     cm = confusion_matrix(y_true, y_pred, labels=classes)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        xticklabels=classes,
-        yticklabels=classes,
-        ax=ax,
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=cm,
+            x=classes,
+            y=classes,
+            colorscale="Blues",
+            text=cm.astype(str),
+            texttemplate="%{text}",
+            textfont={"size": 12},
+        )
     )
-    ax.set_title(title)
-    if path:
-        save_plot(fig, path)
+    fig.update_layout(
+        title=title,
+        xaxis_title="Predicted label",
+        yaxis_title="True label",
+    )
+    save_plot(fig, path)
 
 
 def generate_roc_curve_plot(
     y_true_bin, y_prob, title="ROC Curve", path=None
 ):
-    """Generate and save an ROC curve plot. Assumes y_true_bin is binary 0/1."""
+    """Generate and save an ROC curve plot using Plotly. Assumes y_true_bin is binary 0/1."""
     fpr, tpr, _ = roc_curve(y_true_bin, y_prob)
     roc_auc = roc_auc_score(y_true_bin, y_prob)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
-    ax.plot([0, 1], [0, 1], "k--")
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title(title)
-    ax.legend()
-    if path:
-        save_plot(fig, path)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name=f"AUC = {roc_auc:.2f}"))
+    fig.add_trace(
+        go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line=dict(dash="dash"),
+            showlegend=False,
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="False Positive Rate",
+        yaxis_title="True Positive Rate",
+    )
+    save_plot(fig, path)
 
 
 def generate_pr_curve_plot(
     y_true_bin, y_prob, title="Precision-Recall Curve", path=None
 ):
-    """Generate and save a Precision-Recall curve plot. Assumes y_true_bin is binary 0/1."""
+    """Generate and save a Precision-Recall curve plot using Plotly. Assumes y_true_bin is binary 0/1."""
     precision, recall, _ = precision_recall_curve(y_true_bin, y_prob)
     ap = average_precision_score(y_true_bin, y_prob)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.step(recall, precision, where="post", label=f"AP = {ap:.2f}")
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title(title)
-    ax.legend()
-    if path:
-        save_plot(fig, path)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=recall,
+            y=precision,
+            mode="lines",
+            line_shape="hv",
+            name=f"AP = {ap:.2f}",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Recall",
+        yaxis_title="Precision",
+    )
+    save_plot(fig, path)
 
 
 def generate_calibration_plot(
     y_true_bin, y_prob, n_bins=10, title="Calibration Plot", path=None
 ):
-    """Generate and save a calibration plot. Assumes y_true_bin is binary 0/1."""
+    """Generate and save a calibration plot using Plotly. Assumes y_true_bin is binary 0/1."""
     prob_true, prob_pred = calibration_curve(
         y_true_bin, y_prob, n_bins=n_bins, strategy="uniform"
     )
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(prob_pred, prob_true, marker="o", label="Model")
-    ax.plot([0, 1], [0, 1], linestyle="--", label="Perfect")
-    ax.set_xlabel("Predicted Probability")
-    ax.set_ylabel("Observed Probability")
-    ax.set_title(title)
-    ax.legend()
-    if path:
-        save_plot(fig, path)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=prob_pred, y=prob_true, mode="lines+markers", name="Model")
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line=dict(dash="dash"),
+            name="Perfect",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Predicted Probability",
+        yaxis_title="Observed Probability",
+    )
+    save_plot(fig, path)
 
 
 def generate_per_class_metrics_plot(
@@ -99,68 +129,83 @@ def generate_per_class_metrics_plot(
     title="Per-Class Metrics",
     path=None,
 ):
-    """Generate and save a bar plot of per-class metrics."""
+    """Generate and save a bar plot of per-class metrics using Plotly."""
     report = classification_report(y_true, y_pred, output_dict=True)
     classes = [
         cls
         for cls in report
         if cls not in ["accuracy", "macro avg", "micro avg", "weighted avg"]
     ]
-    df = pd.DataFrame(report).T.loc[classes, metrics]
-    fig, ax = plt.subplots(figsize=(8, 5))
-    df.plot(kind="bar", ax=ax)
-    ax.set_title(title)
-    ax.set_ylabel("Score")
-    ax.set_ylim(0, 1)
-    ax.legend(loc="lower right")
-    if path:
-        save_plot(fig, path)
+    df = pd.DataFrame(report).T.loc[classes, metrics].reset_index().rename(
+        columns={"index": "Class"}
+    )
+    df_long = df.melt(id_vars="Class", var_name="Metric", value_name="Score")
+    fig = px.bar(
+        df_long,
+        x="Class",
+        y="Score",
+        color="Metric",
+        barmode="group",
+        title=title,
+    )
+    fig.update_yaxes(range=[0, 1])
+    save_plot(fig, path)
 
 
 def generate_scatter_plot(
     y_true, y_pred, title="Predicted vs Actual", path=None
 ):
-    """Generate and save a scatter plot of predicted vs actual values."""
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(y_true, y_pred, alpha=0.5)
+    """Generate and save a scatter plot of predicted vs actual values using Plotly."""
     min_val = min(np.min(y_true), np.min(y_pred))
     max_val = max(np.max(y_true), np.max(y_pred))
-    ax.plot([min_val, max_val], [min_val, max_val], "r--", label="Perfect")
-    ax.set_xlabel("Actual")
-    ax.set_ylabel("Predicted")
-    ax.set_title(title)
-    ax.legend()
-    if path:
-        save_plot(fig, path)
+    fig = px.scatter(
+        x=y_true,
+        y=y_pred,
+        opacity=0.5,
+        labels={"x": "Actual", "y": "Predicted"},
+        title=title,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val, max_val],
+            mode="lines",
+            line=dict(dash="dash"),
+            name="Perfect",
+        )
+    )
+    save_plot(fig, path)
 
 
 def generate_residual_plot(
     y_true, y_pred, title="Residual Plot", path=None
 ):
-    """Generate and save a residual plot."""
+    """Generate and save a residual plot using Plotly."""
     residuals = y_true - y_pred
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(y_pred, residuals, alpha=0.5)
-    ax.axhline(0, color="r", linestyle="--")
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("Residual (Actual - Predicted)")
-    ax.set_title(title)
-    if path:
-        save_plot(fig, path)
+    fig = px.scatter(
+        x=y_pred,
+        y=residuals,
+        opacity=0.5,
+        labels={"x": "Predicted", "y": "Residual (Actual - Predicted)"},
+        title=title,
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="red")
+    save_plot(fig, path)
 
 
 def generate_residual_histogram(
     y_true, y_pred, bins=30, title="Residual Histogram", path=None
 ):
-    """Generate and save a histogram of residuals."""
+    """Generate and save a histogram of residuals using Plotly."""
     residuals = y_true - y_pred
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.hist(residuals, bins=bins)
-    ax.set_xlabel("Residual")
-    ax.set_ylabel("Frequency")
-    ax.set_title(title)
-    if path:
-        save_plot(fig, path)
+    fig = px.histogram(
+        x=residuals,
+        nbins=bins,
+        labels={"x": "Residual"},
+        title=title,
+    )
+    fig.update_layout(yaxis_title="Frequency")
+    save_plot(fig, path)
 
 
 def generate_metric_comparison_bar(
@@ -169,13 +214,62 @@ def generate_metric_comparison_bar(
     title="Metric Comparison Across Phases",
     path=None,
 ):
-    """Generate and save a bar plot comparing metrics across phases."""
-    df = pd.DataFrame(metrics_scores, index=phases).T
-    fig, ax = plt.subplots(figsize=(10, 6))
-    df.plot(kind="bar", ax=ax)
-    ax.set_title(title)
-    ax.set_ylabel("Score")
-    ax.set_ylim(0, max(df.max().max(), 1) * 1.1)
-    ax.legend(title="Phase")
+    """Generate and save a bar plot comparing metrics across phases using Plotly."""
+    df = pd.DataFrame(metrics_scores, index=phases).T.reset_index().rename(
+        columns={"index": "Metric"}
+    )
+    df_long = df.melt(id_vars="Metric", var_name="Phase", value_name="Score")
+    fig = px.bar(
+        df_long,
+        x="Metric",
+        y="Score",
+        color="Phase",
+        barmode="group",
+        title=title,
+    )
+    max_score = df_long["Score"].max()
+    fig.update_yaxes(range=[0, max(max_score, 1) * 1.1])
+    save_plot(fig, path)
+
+
+# Additional SHAP plots (using matplotlib since SHAP natively uses it)
+import shap
+import matplotlib.pyplot as plt
+
+
+def generate_shap_summary_plot(
+    shap_values, features, title="SHAP Summary Plot", path=None
+):
+    """Generate and save a SHAP summary plot."""
+    fig = plt.figure(figsize=(10, 8))
+    shap.summary_plot(shap_values, features, show=False)
+    plt.title(title)
     if path:
-        save_plot(fig, path)
+        plt.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def generate_shap_force_plot(
+    explainer, instance, title="SHAP Force Plot", path=None
+):
+    """Generate and save a SHAP force plot for a single instance."""
+    shap_values = explainer(instance)
+    fig = plt.figure(figsize=(10, 4))
+    shap.plots.force(shap_values[0], show=False)
+    plt.title(title)
+    if path:
+        plt.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def generate_shap_waterfall_plot(
+    explainer, instance, title="SHAP Waterfall Plot", path=None
+):
+    """Generate and save a SHAP waterfall plot for a single instance."""
+    shap_values = explainer(instance)
+    fig = plt.figure(figsize=(10, 6))
+    shap.plots.waterfall(shap_values[0], show=False)
+    plt.title(title)
+    if path:
+        plt.savefig(path, bbox_inches="tight")
+        plt.close(fig)
