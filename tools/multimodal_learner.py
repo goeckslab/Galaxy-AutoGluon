@@ -213,6 +213,18 @@ def main():
     )
     args = parser.parse_args()
 
+    # Add debug logging for Galaxy troubleshooting
+    logger.info("=== Galaxy Tool Debug Info ===")
+    logger.info(f"Working directory: {os.getcwd()}")
+    logger.info(f"Command line arguments: {sys.argv}")
+    logger.info(f"Parsed arguments: {vars(args)}")
+    logger.info(f"Input train CSV exists: {os.path.exists(args.train_csv)}")
+    if args.test_csv:
+        logger.info(f"Input test CSV exists: {os.path.exists(args.test_csv)}")
+    if args.images_zip:
+        logger.info(f"Images ZIP exists: {os.path.exists(args.images_zip)}")
+    logger.info("=== End Debug Info ===")
+
     # Set seeds for reproducibility
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
@@ -602,6 +614,35 @@ def main():
         f.write(full_html)
     logger.info(f"Wrote HTML report → {args.output_html}")
 
+    def verify_galaxy_outputs():
+        """Verify all Galaxy output files were created successfully."""
+        outputs = [
+            (args.output_csv, "CSV metrics"),
+            (args.output_json, "JSON results"),
+            (args.output_html, "HTML report")
+        ]
+
+        all_good = True
+        for filepath, description in outputs:
+            if os.path.exists(filepath):
+                size = os.path.getsize(filepath)
+                logger.info(f"✓ Galaxy output {description}: {filepath} ({size:,} bytes)")
+                # Ensure readable permissions
+                os.chmod(filepath, 0o644)
+            else:
+                logger.error(f"✗ Galaxy output {description} MISSING: {filepath}")
+                all_good = False
+
+        if not all_good:
+            logger.error("Some Galaxy outputs are missing!")
+            sys.exit(1)
+        else:
+            logger.info("All Galaxy outputs verified successfully")
+
+    verify_galaxy_outputs()
+
+    # List all files in working directory for debugging
+    logger.info(f"Final working directory contents: {os.listdir('.')}")
 
 if __name__ == "__main__":
     main()
