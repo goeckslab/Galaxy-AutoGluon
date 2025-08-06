@@ -10,8 +10,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import random
+import seaborn as sns
 import torch
 from autogluon.multimodal import MultiModalPredictor
+from autogluon.tabular import TabularPredictor
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    average_precision_score,
+    matthews_corrcoef,
+    log_loss,
+    mean_squared_error,
+    mean_absolute_error,
+    median_absolute_error,
+    r2_score,
+)
 from sklearn.model_selection import train_test_split
 
 from feature_help_modal import get_metrics_help_modal
@@ -48,8 +65,84 @@ def path_expander(p: str, base_folder: str) -> str:
     return os.path.abspath(os.path.join(base_folder, p))
 
 
+def compute_metrics(y_true, y_pred, y_prob, kind, metrics):
+    """Compute specified metrics given y_true, y_pred, y_prob."""
+    scores = {}
+    for m in metrics:
+        if m == "accuracy":
+            scores[m] = accuracy_score(y_true, y_pred)
+        elif m == "balanced_accuracy":
+            scores[m] = balanced_accuracy_score(y_true, y_pred)
+        elif m == "f1":
+            scores[m] = f1_score(y_true, y_pred, average="binary" if kind == "binary" else "macro")
+        elif m == "f1_macro":
+            scores[m] = f1_score(y_true, y_pred, average="macro")
+        elif m == "f1_micro":
+            scores[m] = f1_score(y_true, y_pred, average="micro")
+        elif m == "f1_weighted":
+            scores[m] = f1_score(y_true, y_pred, average="weighted")
+        elif m == "precision":
+            scores[m] = precision_score(y_true, y_pred, average="binary" if kind == "binary" else "macro")
+        elif m == "precision_macro":
+            scores[m] = precision_score(y_true, y_pred, average="macro")
+        elif m == "precision_micro":
+            scores[m] = precision_score(y_true, y_pred, average="micro")
+        elif m == "precision_weighted":
+            scores[m] = precision_score(y_true, y_pred, average="weighted")
+        elif m == "recall":
+            scores[m] = recall_score(y_true, y_pred, average="binary" if kind == "binary" else "macro")
+        elif m == "recall_macro":
+            scores[m] = recall_score(y_true, y_pred, average="macro")
+        elif m == "recall_micro":
+            scores[m] = recall_score(y_true, y_pred, average="micro")
+        elif m == "recall_weighted":
+            scores[m] = recall_score(y_true, y_pred, average="weighted")
+        elif m == "roc_auc":
+            if kind == "binary":
+                scores[m] = roc_auc_score(y_true, y_prob[:, 1])
+        elif m == "roc_auc_ovo_macro":
+            scores[m] = roc_auc_score(y_true, y_prob, multi_class="ovo", average="macro")
+        elif m == "roc_auc_ovr_macro":
+            scores[m] = roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
+        elif m == "average_precision":
+            scores[m] = average_precision_score(y_true, y_prob[:, 1])
+        elif m == "mcc":
+            scores[m] = matthews_corrcoef(y_true, y_pred)
+        elif m == "log_loss":
+            scores[m] = log_loss(y_true, y_prob)
+        elif m == "root_mean_squared_error":
+            scores[m] = mean_squared_error(y_true, y_pred, squared=False)
+        elif m == "mean_squared_error":
+            scores[m] = mean_squared_error(y_true, y_pred)
+        elif m == "mean_absolute_error":
+            scores[m] = mean_absolute_error(y_true, y_pred)
+        elif m == "median_absolute_error":
+            scores[m] = median_absolute_error(y_true, y_pred)
+        elif m == "mean_absolute_percentage_error":
+            scores[m] = np.mean(np.abs((y_true - y_pred) / y_true)) * 100 if np.all(y_true != 0) else np.nan
+        elif m == "r2":
+            scores[m] = r2_score(y_true, y_pred)
+    return scores
+
+
+def infer_problem_type(predictor, df):
+    if isinstance(predictor, TabularPredictor):
+        return predictor.problem_type
+    else:
+        label_col = predictor.label
+        if pd.api.types.is_numeric_dtype(df[label_col]):
+            # Regression or binary based on values
+            unique_vals = df[label_col].dropna().unique()
+            if len(unique_vals) == 2:
+                return "binary"
+            else:
+                return "regression"
+        else:
+            return "multiclass"
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Train & report an AutoGluon Multimodal model")
+    parser = argparse.ArgumentParser(description="Train & report an AutoGluon model")
     parser.add_argument(
         "--input_csv_train",
         dest="train_csv",
@@ -145,11 +238,30 @@ def main():
                 logger.error(f"Failed to extract images ZIP: {e}")
                 sys.exit(1)
 
+    # Handle numeric column selections from Galaxy (e.g., '6' as index)
+    def map_column_arg(col_arg, df, arg_name):
+        if col_arg and col_arg.isdigit():
+            col_idx = int(col_arg) - 1  # Galaxy columns start at 1
+            if col_idx < 0 or col_idx >= len(df.columns):
+                logger.error(
+                    f"Invalid {arg_name} index {col_arg} (out of range 1-{len(df.columns)})"
+                )
+                sys.exit(1)
+            mapped_col = df.columns[col_idx]
+            logger.info(
+                f"Mapped {arg_name} index {col_arg} to column name '{mapped_col}'"
+            )
+            return mapped_col
+        return col_arg
+
     # Load CSVs and handle splitting
     try:
         if args.test_csv:
             df_train_full = pd.read_csv(args.train_csv)
             df_test = pd.read_csv(args.test_csv)
+            # Map columns before accessing them
+            args.label_column = map_column_arg(args.label_column, df_train_full, "target_column")
+            args.image_column = map_column_arg(args.image_column, df_train_full, "image_column")
             stratify_col = (
                 df_train_full[args.label_column]
                 if df_train_full[args.label_column].nunique() > 1
@@ -163,6 +275,9 @@ def main():
             )
         else:
             df_full = pd.read_csv(args.train_csv)
+            # Map columns before accessing them
+            args.label_column = map_column_arg(args.label_column, df_full, "target_column")
+            args.image_column = map_column_arg(args.image_column, df_full, "image_column")
             stratify_col = (
                 df_full[args.label_column] if df_full[args.label_column].nunique() > 1 else None
             )
@@ -188,29 +303,6 @@ def main():
         logger.error(f"Failed to read input CSVs: {e}")
         sys.exit(1)
 
-    # Handle numeric column selections from Galaxy (e.g., '6' as index)
-    def map_column_arg(col_arg, df, arg_name):
-        if col_arg and col_arg.isdigit():
-            col_idx = int(col_arg) - 1  # Galaxy columns start at 1
-            if col_idx < 0 or col_idx >= len(df.columns):
-                logger.error(
-                    f"Invalid {arg_name} index {col_arg} (out of range 1-{len(df.columns)})"
-                )
-                sys.exit(1)
-            mapped_col = df.columns[col_idx]
-            logger.info(
-                f"Mapped {arg_name} index {col_arg} to column name '{mapped_col}'"
-            )
-            return mapped_col
-        return col_arg
-
-    args.label_column = map_column_arg(
-        args.label_column, df_train_full, "target_column"
-    )
-    args.image_column = map_column_arg(
-        args.image_column, df_train_full, "image_column"
-    )
-
     # Verify columns
     for df, name in [(df_train_full, "train"), (df_test, "test")]:
         if args.label_column not in df.columns:
@@ -219,7 +311,6 @@ def main():
         if args.image_column and args.image_column not in df.columns:
             logger.error(f"Missing image column '{args.image_column}' in {name} CSV")
             sys.exit(1)
-
     logger.info(
         f"Split: {len(df_train)} train / {len(df_val)} val / {len(df_test)} test"
     )
@@ -235,70 +326,48 @@ def main():
     column_types = {args.image_column: "image_path"} if args.image_column else None
 
     # Train
-    logger.info("Starting AutoGluon MultiModal training...")
-    predictor = MultiModalPredictor(
-        label=args.label_column,
-        path=None,
-    )
-    predictor.fit(
-        train_data=df_train,
-        tuning_data=df_val,
-        time_limit=args.time_limit,
-        column_types=column_types,
-    )
+    if args.image_column:
+        logger.info("Starting AutoGluon MultiModal training...")
+        predictor = MultiModalPredictor(
+            label=args.label_column,
+            path=None,
+        )
+        predictor.fit(
+            train_data=df_train,
+            tuning_data=df_val,
+            time_limit=args.time_limit,
+            column_types=column_types,
+        )
+    else:
+        logger.info("Starting AutoGluon Tabular training...")
+        predictor = TabularPredictor(
+            label=args.label_column,
+            path=None,
+        )
+        predictor.fit(
+            train_data=df_train,
+            tuning_data=df_val,
+            time_limit=args.time_limit,
+        )
 
     # Evaluate
-    problem_type = predictor.problem_type
-    if problem_type == "regression":
-        kind = "regression"
-    elif problem_type == "binary":
-        kind = "binary"
-    elif problem_type == "multiclass":
-        kind = "multiclass"
-    else:
-        kind = "other"
+    kind = infer_problem_type(predictor, df_train_full)
     metrics_map = {
-        "binary": [
-            "accuracy",
-            "balanced_accuracy",
-            "f1",
-            "precision",
-            "recall",
-            "roc_auc",
-            "average_precision",
-            "mcc",
-            "log_loss",
-        ],
-        "multiclass": [
-            "accuracy",
-            "balanced_accuracy",
-            "f1_macro",
-            "f1_micro",
-            "f1_weighted",
-            "precision_macro",
-            "precision_micro",
-            "precision_weighted",
-            "recall_macro",
-            "recall_micro",
-            "recall_weighted",
-            "mcc",
-            "log_loss",
-            "roc_auc_ovo_macro",
-            "roc_auc_ovr_macro",
-        ],
-        "regression": [
-            "root_mean_squared_error",
-            "mean_squared_error",
-            "mean_absolute_error",
-            "median_absolute_error",
-            "mean_absolute_percentage_error",
-            "r2",
-        ],
+        "binary": ["accuracy", "f1", "roc_auc", "log_loss"],
+        "multiclass": ["accuracy", "log_loss"],
+        "regression": ["root_mean_squared_error", "r2", "mean_absolute_error"]
     }
     metrics = metrics_map.get(kind, ["accuracy"])
-    train_scores = predictor.evaluate(df_train, metrics=metrics)
-    val_scores = predictor.evaluate(df_val, metrics=metrics)
-    test_scores = predictor.evaluate(df_test, metrics=metrics)
+
+    def evaluate_phase(df):
+        y_true = df[args.label_column]
+        y_pred = predictor.predict(df)
+        y_prob = predictor.predict_proba(df).values if kind != "regression" else None
+        return compute_metrics(y_true, y_pred, y_prob, kind, metrics)
+
+    train_scores = evaluate_phase(df_train)
+    val_scores = evaluate_phase(df_val)
+    test_scores = evaluate_phase(df_test)
     logger.info("Train metrics: %s", train_scores)
     logger.info("Val metrics: %s", val_scores)
     logger.info("Test metrics: %s", test_scores)
@@ -336,7 +405,7 @@ def main():
         "Image Column": args.image_column or "N/A (no images used)",
         "Time Limit (s)": args.time_limit or "unbounded",
         "Random Seed": args.random_seed,
-        "Problem Type": problem_type,
+        "Problem Type": kind,
         "AutoGluon Path": os.path.abspath(predictor.path),
     }
     cfg_rows = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in config.items())
@@ -366,7 +435,6 @@ def main():
     tmpdir = tempfile.mkdtemp()
     y_true = df_test[args.label_column]
     y_pred = predictor.predict(df_test)
-
     # Collect scores for metric comparison plot
     common_metrics = set(train_scores) & set(val_scores) & set(test_scores)
     scores_for_plot = {
@@ -377,7 +445,6 @@ def main():
     metric_bar_path = os.path.join(tmpdir, "metric_comparison.png")
     generate_metric_comparison_bar(scores_for_plot, path=metric_bar_path)
     summary_plots = [("Metric Comparison", metric_bar_path)]
-
     # Add visualizations to summary_html
     summary_html += (
         "<h2>Visualizations</h2>"
@@ -452,57 +519,76 @@ def main():
         )
     )
 
-    # 3) feature tab with SHAP if possible
+    # 3) feature tab
     feature_html = "<p><em>Feature importance is not available for this model.</em></p>"
-    feature_plots = []
-    try:
-        import shap
-
-        if args.image_column:
-            raise ValueError("SHAP not supported for models with image data")
-
-        df_shap = df_test.drop(columns=[args.label_column]).sample(
-            min(50, len(df_test)), random_state=args.random_seed
-        )
-
-        def model_func(df):
-            if kind == "regression":
-                return predictor.predict(df).values
-            else:
-                return predictor.predict_proba(df).values
-
-        explainer = shap.Explainer(model_func, df_shap)
-
-        shap_values = explainer(df_shap)
-
-        summary_path = os.path.join(tmpdir, "shap_summary.png")
-        generate_shap_summary_plot(shap_values, df_shap, path=summary_path)
-        feature_plots.append(("SHAP Summary", summary_path))
-
-        instance = df_shap.iloc[0:1]
-        force_path = os.path.join(tmpdir, "shap_force.png")
-        generate_shap_force_plot(explainer, instance, path=force_path)
-        feature_plots.append(("SHAP Force Plot (Sample)", force_path))
-
-        waterfall_path = os.path.join(tmpdir, "shap_waterfall.png")
-        generate_shap_waterfall_plot(explainer, instance, path=waterfall_path)
-        feature_plots.append(("SHAP Waterfall Plot (Sample)", waterfall_path))
-
-        feature_html = (
-            "<h2>Feature Importance via SHAP</h2>"
-            + "".join(
-                f"<div class='plot'><h3>{title}</h3>"
-                f"<img src='data:image/png;base64,{encode_image_to_base64(path)}'/></div>"
-                for title, path in feature_plots
+    if isinstance(predictor, TabularPredictor):
+        try:
+            fi = predictor.feature_importance(
+                df_test,
+                subsample_size=min(1000, len(df_test)),
+                num_shuffle_sets=10,
+                silent=True,
             )
-        )
-    except Exception as e:
-        logger.warning(f"SHAP explanation failed: {e}")
+            plt.figure(figsize=(8, max(4, len(fi) * 0.4)))
+            sns.barplot(x=fi["importance"].values, y=fi.index, xerr=fi["stddev"].values)
+            plt.title("Feature Importance (Permutation)")
+            plt.xlabel("Importance")
+            plt.ylabel("Features")
+            fi_path = os.path.join(tmpdir, "feature_importance.png")
+            plt.savefig(fi_path, bbox_inches="tight")
+            plt.close()
+            feature_html = (
+                "<h2>Feature Importance</h2>"
+                "<div class='plot'>"
+                f"<img src='data:image/png;base64,{encode_image_to_base64(fi_path)}'/>"
+                "</div>"
+            )
+        except Exception as e:
+            logger.warning(f"Feature importance failed: {e}")
+    else:
+        feature_plots = []
+        try:
+            import shap
+
+            if args.image_column:
+                raise ValueError("SHAP not supported for models with image data")
+            df_shap = df_test.drop(columns=[args.label_column]).sample(
+                min(50, len(df_test)), random_state=args.random_seed
+            )
+
+            def model_func(df):
+                if kind == "regression":
+                    return predictor.predict(df).values
+                else:
+                    return predictor.predict_proba(df).values
+
+            explainer = shap.Explainer(model_func, df_shap)
+            shap_values = explainer(df_shap)
+            summary_path = os.path.join(tmpdir, "shap_summary.png")
+            generate_shap_summary_plot(shap_values, df_shap, path=summary_path)
+            feature_plots.append(("SHAP Summary", summary_path))
+            instance = df_shap.iloc[0:1]
+            force_path = os.path.join(tmpdir, "shap_force.png")
+            generate_shap_force_plot(explainer, instance, path=force_path)
+            feature_plots.append(("SHAP Force Plot (Sample)", force_path))
+            waterfall_path = os.path.join(tmpdir, "shap_waterfall.png")
+            generate_shap_waterfall_plot(explainer, instance, path=waterfall_path)
+            feature_plots.append(("SHAP Waterfall Plot (Sample)", waterfall_path))
+            feature_html = (
+                "<h2>Feature Importance via SHAP</h2>"
+                + "".join(
+                    f"<div class='plot'><h3>{title}</h3>"
+                    f"<img src='data:image/png;base64,{encode_image_to_base64(path)}'/></div>"
+                    for title, path in feature_plots
+                )
+            )
+        except Exception as e:
+            logger.warning(f"SHAP explanation failed: {e}")
 
     # Assemble tabs + help modal (placed outside tabs for proper display)
     full_html = (
         get_html_template()
-        + "<h1>AutoGluon Multimodal Learner Report</h1>"
+        + "<h1>AutoGluon Learner Report</h1>"
         + build_tabbed_html(
             summary_html,
             test_html,
@@ -512,7 +598,6 @@ def main():
         + get_metrics_help_modal()
         + get_html_closing()
     )
-
     with open(args.output_html, "w") as f:
         f.write(full_html)
     logger.info(f"Wrote HTML report → {args.output_html}")
